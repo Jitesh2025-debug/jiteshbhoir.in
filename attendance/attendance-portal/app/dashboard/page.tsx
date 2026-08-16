@@ -357,7 +357,7 @@ export default function Dashboard() {
               Dashboard
             </a>
 
-            {hasPermission("attendance.view") && (
+            {hasPermission("can_attendance") && (
               <a
                 href="/attendance"
                 className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
@@ -366,7 +366,7 @@ export default function Dashboard() {
               </a>
             )}
 
-            {hasPermission("reports.view") && (
+            {hasPermission("can_reports") && (
               <a
                 href="/reports"
                 className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
@@ -375,34 +375,34 @@ export default function Dashboard() {
               </a>
             )}
 
-            {hasPermission("staff.view") && (
-              <a
-                href="/staff"
-                className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Staff Management
-              </a>
-            )}
+            {hasPermission("can_staff") && (
+  <a
+    href="/staff"
+    className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+  >
+    Staff Management
+  </a>
+)}
 
-            {hasPermission("staff.view") && (
-              <a
-                href="/employees"
-                className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Employees
-              </a>
-            )}
+{hasPermission("can_employees") && (
+  <a
+    href="/employees"
+    className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+  >
+    Employees
+  </a>
+)}
 
-            {hasPermission("staff.view") && (
-              <a
-                href="/roster"
-                className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Roster
-              </a>
-            )}
+{hasPermission("can_roster") && (
+  <a
+    href="/roster"
+    className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+  >
+    Roster
+  </a>
+)}
 
-            {hasPermission("settings.manage") && (
+            {hasPermission("can_settings") && (
               <a
                 href="/settings"
                 className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
@@ -423,7 +423,7 @@ export default function Dashboard() {
               </p>
             </div>
 
-            {hasPermission("attendance.view") && (
+            {hasPermission("can_attendance") && (
               <button
                 type="button"
                 onClick={() => setShowAttendanceModal(true)}
