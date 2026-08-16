@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase";
 import { getUserPermissions } from "@/lib/permissions";
 
@@ -62,7 +62,7 @@ export default function Dashboard() {
   const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
-
+const [showMenu, setShowMenu] = useState(false);
   const [statsLoading, setStatsLoading] = useState(true);
   const [plannedToday, setPlannedToday] = useState(0);
   const [presentToday, setPresentToday] = useState(0);
@@ -326,95 +326,132 @@ export default function Dashboard() {
   return (
     <main className="min-h-screen bg-slate-100">
       {/* Header */}
-      <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6">
-        <h1 className="text-lg font-bold text-slate-800">Attendance Portal</h1>
+      <header className="bg-white border-b border-slate-200 px-4 py-4">
 
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <p className="text-sm font-medium text-slate-800">
-              {profile?.full_name}
-            </p>
-            <p className="text-xs text-slate-500 capitalize">{profile?.role}</p>
-          </div>
+  <div className="flex items-center justify-between">
 
-          <button
-            onClick={handleLogout}
-            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Logout
-          </button>
-        </div>
-      </header>
+    <div className="flex items-center gap-3">
 
-      <div className="flex">
+      <button
+        onClick={() => setShowMenu(!showMenu)}
+        className="rounded-lg border border-slate-300 p-2 lg:hidden"
+      >
+        ☰
+      </button>
+
+      <h1 className="text-lg font-bold text-slate-800">
+        Attendance Portal
+      </h1>
+
+    </div>
+
+    <div className="text-right">
+
+      <p className="text-sm font-medium text-slate-800">
+        {profile?.full_name}
+      </p>
+
+      <p className="text-xs text-slate-500 capitalize">
+        {profile?.role}
+      </p>
+
+    </div>
+
+  </div>
+
+</header>
+
+     <div className="flex flex-col lg:flex-row">
         {/* Sidebar */}
-        <aside className="w-64 min-h-[calc(100vh-4rem)] bg-white border-r border-slate-200 p-4">
-          <nav className="space-y-1">
-            <a
-              href="/dashboard"
-              className="block rounded-lg bg-slate-100 px-4 py-3 text-sm font-medium text-slate-800"
-            >
-              Dashboard
-            </a>
+        <aside
+  className={`
+    ${showMenu ? "block" : "hidden"}
+    lg:block
+    w-full
+    lg:w-64
+    bg-white
+    border-r
+    border-slate-200
+    p-4
+  `}
+>
 
-            {hasPermission("can_attendance") && (
-              <a
-                href="/attendance"
-                className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Attendance
-              </a>
-            )}
+  <nav className="space-y-2">
 
-            {hasPermission("can_reports") && (
-              <a
-                href="/reports"
-                className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Reports
-              </a>
-            )}
+    <a
+      href="/dashboard"
+      className="block rounded-lg bg-slate-100 px-4 py-3 text-sm"
+    >
+      Dashboard
+    </a>
 
-            {hasPermission("can_staff") && (
-  <a
-    href="/staff"
-    className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-  >
-    Staff Management
-  </a>
-)}
+    {hasPermission("can_attendance") && (
+      <a
+        href="/attendance"
+        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+      >
+        Attendance
+      </a>
+    )}
 
-{hasPermission("can_employees") && (
-  <a
-    href="/employees"
-    className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-  >
-    Employees
-  </a>
-)}
+    {hasPermission("can_employees") && (
+      <a
+        href="/employees"
+        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+      >
+        Employees
+      </a>
+    )}
 
-{hasPermission("can_roster") && (
-  <a
-    href="/roster"
-    className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-  >
-    Roster
-  </a>
-)}
+    {hasPermission("can_roster") && (
+      <a
+        href="/roster"
+        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+      >
+        Roster
+      </a>
+    )}
 
-            {hasPermission("can_settings") && (
-              <a
-                href="/settings"
-                className="block rounded-lg px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              >
-                Settings
-              </a>
-            )}
-          </nav>
-        </aside>
+    {hasPermission("can_reports") && (
+      <a
+        href="/reports"
+        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+      >
+        Reports
+      </a>
+    )}
+
+    {hasPermission("can_staff") && (
+      <a
+        href="/staff"
+        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+      >
+        Staff Management
+      </a>
+    )}
+
+    {hasPermission("can_settings") && (
+      <a
+        href="/settings"
+        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+      >
+        Settings
+      </a>
+    )}
+
+    <button
+      onClick={handleLogout}
+      className="mt-4 w-full rounded-lg border border-slate-300 px-4 py-3 text-sm hover:bg-slate-50"
+    >
+      Logout
+    </button>
+
+  </nav>
+
+</aside>
 
         {/* Main */}
-        <section className="flex-1 p-6 lg:p-8">
+        <section className="flex-1 p-4 sm:p-6 lg:p-8">
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-2xl font-bold text-slate-800">Dashboard</h2>
@@ -435,7 +472,7 @@ export default function Dashboard() {
           </div>
 
           {/* KPI Cards - Clickable */}
-          <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
+          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <SummaryCard
               label="Planned Today"
               value={statsLoading ? "—" : plannedToday}
