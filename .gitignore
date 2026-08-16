@@ -1,0 +1,9 @@
+.vscode/
+*.code-workspace
+TIMEZONE_AUDIT.md
+STAFF_MANAGEMENT_GUIDE.md
+USER_CREATION_IMPLEMENTATION.md
+USER_CREATION_TROUBLESHOOTING.md
+attendance/attendance-portal/node_modules/
+attendance/attendance-portal/.next/
+attendance/attendance-portal/tsconfig.tsbuildinfo
