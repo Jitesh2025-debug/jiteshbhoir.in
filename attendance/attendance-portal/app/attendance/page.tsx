@@ -16,6 +16,10 @@ type AttendanceRow = {
   gender: string | null;
   check_in: string | null;
   check_out: string | null;
+  status?: string | null;
+  shift_start?: string | null;
+  shift_end?: string | null;
+  grace_minutes?: number | null;
 };
 
 type AbsentRow = {
@@ -49,16 +53,40 @@ function formatTimeIST(iso: string | null) {
   });
 }
 
-function isLate(checkIn: string | null): boolean {
-  if (!checkIn) return false;
-  const hour = new Date(checkIn).toLocaleString("en-IN", {
+function timeStringToMinutes(time: string): number {
+  const [h, m] = time.split(":").map(Number);
+  return h * 60 + (m || 0);
+}
+
+function getMinutesIST(iso: string | null): number | null {
+  if (!iso) return null;
+  const str = new Date(iso).toLocaleString("en-IN", {
     timeZone: "Asia/Kolkata",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
-  const [h, m] = hour.split(":").map(Number);
-  return h * 60 + m > 9 * 60 + 15;
+  const [h, m] = str.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function isLateWithShift(
+  checkIn: string | null,
+  shiftStart: string | null | undefined,
+  graceMinutes = 15
+): boolean {
+  if (!checkIn) return false;
+
+  if (!shiftStart) {
+    const mins = getMinutesIST(checkIn);
+    return mins !== null && mins > 9 * 60 + 15;
+  }
+
+  const checkInMins = getMinutesIST(checkIn);
+  if (checkInMins === null) return false;
+
+  const startMins = timeStringToMinutes(shiftStart);
+  return checkInMins > startMins + graceMinutes;
 }
 
 function normalizeGender(g: string | null | undefined): string {
@@ -87,7 +115,6 @@ function AttendanceContent() {
   const [search, setSearch] = useState("");
   const [deptFilter, setDeptFilter] = useState<string | null>(null);
   const [genderFilter, setGenderFilter] = useState<string | null>(null);
-
   const [rows, setRows] = useState<AttendanceRow[]>([]);
   const [absentRows, setAbsentRows] = useState<AbsentRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -148,8 +175,8 @@ function AttendanceContent() {
         );
         setRows([]);
       } else {
-        // Prefer selecting gender from attendance if denormalized; otherwise join employees
-        const { data } = await supabase
+        // 1. Load attendance
+        const { data: attData, error: attError } = await supabase
           .from("attendance")
           .select(
             `
@@ -160,27 +187,120 @@ function AttendanceContent() {
             department,
             check_in,
             check_out,
+            status,
             employees ( gender )
           `
           )
           .eq("attendance_date", today)
           .order("check_in", { ascending: false });
 
-        let list = (data || []).map((a: any) => ({
+        if (attError) throw attError;
+
+        let list: AttendanceRow[] = (attData || []).map((a: any) => ({
           id: a.id,
           employee_id: a.employee_id,
           employee_code: a.employee_code,
           full_name: a.full_name,
           department: a.department,
-          gender: a.employees?.gender ?? a.gender ?? null,
+          gender: a.employees?.gender ?? null,
           check_in: a.check_in,
           check_out: a.check_out,
-        })) as AttendanceRow[];
+          status: a.status ?? null,
+          shift_start: null,
+          shift_end: null,
+          grace_minutes: 15,
+        }));
 
+        // 2. Load today's rosters + shifts
+        const employeeIds = list.map((r) => r.employee_id);
+
+        if (employeeIds.length > 0) {
+          const { data: rosterData } = await supabase
+            .from("rosters")
+            .select(
+              `
+              employee_id,
+              shift_id,
+              shifts (
+                start_time,
+                end_time,
+                grace_minutes
+              )
+            `
+            )
+            .eq("roster_date", today)
+            .in("employee_id", employeeIds);
+
+          const shiftMap = new Map<
+            string,
+            { start_time: string; end_time: string; grace_minutes: number | null }
+          >();
+
+          (rosterData || []).forEach((r: any) => {
+            if (r.shifts) {
+              shiftMap.set(r.employee_id, {
+                start_time: r.shifts.start_time,
+                end_time: r.shifts.end_time,
+                grace_minutes: r.shifts.grace_minutes ?? 15,
+              });
+            }
+          });
+
+          list = list.map((row) => {
+            const shift = shiftMap.get(row.employee_id);
+            return {
+              ...row,
+              shift_start: shift?.start_time ?? null,
+              shift_end: shift?.end_time ?? null,
+              grace_minutes: shift?.grace_minutes ?? 15,
+            };
+          });
+        }
+
+        // 3. Auto Half Day
+        const THREE_HOURS = 3 * 60;
+        const nowMins = (() => {
+          const p = new Date().toLocaleString("en-IN", {
+            timeZone: "Asia/Kolkata",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          });
+          const [h, m] = p.split(":").map(Number);
+          return h * 60 + m;
+        })();
+
+        for (const row of list) {
+          if (
+            row.check_in &&
+            !row.check_out &&
+            row.shift_end &&
+            row.status !== "HALF_DAY"
+          ) {
+            const endMins = timeStringToMinutes(row.shift_end);
+            if (nowMins > endMins + THREE_HOURS) {
+              await supabase
+                .from("attendance")
+                .update({
+                  status: "HALF_DAY",
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", row.id);
+
+              row.status = "HALF_DAY";
+            }
+          }
+        }
+
+        // 4. Apply status filter
         if (currentFilter === "present") {
           list = list.filter((a) => a.check_in);
         } else if (currentFilter === "late") {
-          list = list.filter((a) => a.check_in && isLate(a.check_in));
+          list = list.filter(
+            (a) =>
+              a.check_in &&
+              isLateWithShift(a.check_in, a.shift_start, a.grace_minutes ?? 15)
+          );
         } else if (currentFilter === "working") {
           list = list.filter((a) => a.check_in && !a.check_out);
         }
@@ -197,7 +317,6 @@ function AttendanceContent() {
 
   useEffect(() => {
     loadData(filter);
-    // reset secondary filters when status filter changes
     setDeptFilter(null);
     setGenderFilter(null);
   }, [filter]);
@@ -212,7 +331,7 @@ function AttendanceContent() {
     router.push(url);
   }
 
-  // ── Apply search + dept + gender filters ───────────────────────────────
+  // ── Table filtering (search + dept + gender) ────────────────────────────
   const filteredRows = useMemo(() => {
     let list = rows;
     if (deptFilter) {
@@ -264,33 +383,52 @@ function AttendanceContent() {
   const displayCount =
     filter === "absent" ? filteredAbsent.length : filteredRows.length;
 
-  // ── Snapshot data (from unfiltered status list so cards stay stable) ───
+  // ── Cascading Snapshots ─────────────────────────────────────────────────
   const sourceForSnapshots =
     filter === "absent" ? absentRows : rows;
 
+  // When Gender is selected → Department counts only show that gender
+  const baseForDept = useMemo(() => {
+    let list = sourceForSnapshots;
+    if (genderFilter) {
+      list = list.filter((r) => normalizeGender(r.gender) === genderFilter);
+    }
+    return list;
+  }, [sourceForSnapshots, genderFilter]);
+
+  // When Department is selected → Gender counts only show that department
+  const baseForGender = useMemo(() => {
+    let list = sourceForSnapshots;
+    if (deptFilter) {
+      list = list.filter(
+        (r) => (r.department || "Unassigned") === deptFilter
+      );
+    }
+    return list;
+  }, [sourceForSnapshots, deptFilter]);
+
   const deptSnapshot = useMemo(() => {
     const map = new Map<string, number>();
-    sourceForSnapshots.forEach((r) => {
+    baseForDept.forEach((r) => {
       const d = r.department || "Unassigned";
       map.set(d, (map.get(d) || 0) + 1);
     });
     return Array.from(map.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [sourceForSnapshots]);
+  }, [baseForDept]);
 
   const genderSnapshot = useMemo(() => {
     const map = new Map<string, number>();
-    sourceForSnapshots.forEach((r) => {
+    baseForGender.forEach((r) => {
       const g = normalizeGender(r.gender);
       map.set(g, (map.get(g) || 0) + 1);
     });
-    // Prefer fixed order
     const order = ["Male", "Female", "Other"];
     return order
       .filter((g) => map.has(g))
       .map((name) => ({ name, count: map.get(name)! }));
-  }, [sourceForSnapshots]);
+  }, [baseForGender]);
 
   // ── Download CSV ────────────────────────────────────────────────────────
   function downloadCSV() {
@@ -309,9 +447,24 @@ function AttendanceContent() {
       csvContent =
         "Employee ID,Name,Department,Gender,Check In,Check Out,Status\n";
       filteredRows.forEach((r) => {
-        const late = isLate(r.check_in);
+        const late = isLateWithShift(
+          r.check_in,
+          r.shift_start,
+          r.grace_minutes ?? 15
+        );
         const working = r.check_in && !r.check_out;
-        const status = working ? "Working" : late ? "Late" : "Present";
+        const isHalfDay = r.status === "HALF_DAY";
+        const isOT =
+          r.check_out &&
+          r.shift_end &&
+          (getMinutesIST(r.check_out) ?? 0) >
+            timeStringToMinutes(r.shift_end) + 15;
+
+        let status = "Present";
+        if (isHalfDay) status = "Half Day";
+        else if (working) status = "Working";
+        else if (isOT) status = "OT";
+        else if (late) status = "Late";
 
         csvContent += `"${r.employee_code}","${r.full_name}","${
           r.department || ""
@@ -414,7 +567,7 @@ function AttendanceContent() {
           </div>
         </div>
 
-        {/* ── Department Snapshot ───────────────────────────────────────── */}
+        {/* Department Snapshot */}
         {!loading && deptSnapshot.length > 0 && (
           <div className="mb-4">
             <div className="mb-1.5 flex items-center justify-between">
@@ -436,9 +589,7 @@ function AttendanceContent() {
                 return (
                   <button
                     key={d.name}
-                    onClick={() =>
-                      setDeptFilter(active ? null : d.name)
-                    }
+                    onClick={() => setDeptFilter(active ? null : d.name)}
                     className={`rounded-lg border px-3 py-2 text-left transition ${
                       active
                         ? "border-slate-800 bg-slate-800 text-white"
@@ -458,7 +609,7 @@ function AttendanceContent() {
           </div>
         )}
 
-        {/* ── Gender Snapshot ───────────────────────────────────────────── */}
+        {/* Gender Snapshot */}
         {!loading && genderSnapshot.length > 0 && (
           <div className="mb-5">
             <div className="mb-1.5 flex items-center justify-between">
@@ -489,12 +640,11 @@ function AttendanceContent() {
                     : active
                     ? "border-slate-700 bg-slate-700 text-white"
                     : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300";
+
                 return (
                   <button
                     key={g.name}
-                    onClick={() =>
-                      setGenderFilter(active ? null : g.name)
-                    }
+                    onClick={() => setGenderFilter(active ? null : g.name)}
                     className={`rounded-lg border px-3 py-2 text-left transition ${color}`}
                   >
                     <div className="text-[11px] font-medium opacity-80">
@@ -638,8 +788,18 @@ function AttendanceContent() {
                     </tr>
                   ) : (
                     filteredRows.map((item) => {
-                      const late = isLate(item.check_in);
+                      const late = isLateWithShift(
+                        item.check_in,
+                        item.shift_start,
+                        item.grace_minutes ?? 15
+                      );
                       const working = item.check_in && !item.check_out;
+                      const isHalfDay = item.status === "HALF_DAY";
+                      const isOT =
+                        item.check_out &&
+                        item.shift_end &&
+                        (getMinutesIST(item.check_out) ?? 0) >
+                          timeStringToMinutes(item.shift_end) + 15;
 
                       return (
                         <tr
@@ -667,9 +827,17 @@ function AttendanceContent() {
                               : "—"}
                           </td>
                           <td className="px-4 py-2.5">
-                            {working ? (
+                            {isHalfDay ? (
+                              <span className="inline-flex rounded-full bg-purple-50 px-2 py-0.5 text-[10px] font-medium text-purple-700">
+                                Half Day
+                              </span>
+                            ) : working ? (
                               <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600">
                                 Working
+                              </span>
+                            ) : isOT ? (
+                              <span className="inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700">
+                                OT
                               </span>
                             ) : late ? (
                               <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">
@@ -693,7 +861,6 @@ function AttendanceContent() {
       </div>
     </main>
   );
-
 }
 
 export default function AttendancePage() {
@@ -701,9 +868,7 @@ export default function AttendancePage() {
     <Suspense
       fallback={
         <div className="flex min-h-screen items-center justify-center bg-slate-50">
-          <div className="text-sm text-slate-500">
-            Loading attendance...
-          </div>
+          <div className="text-sm text-slate-500">Loading attendance...</div>
         </div>
       }
     >
