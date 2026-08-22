@@ -62,7 +62,7 @@ export default function Dashboard() {
   const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
-const [showMenu, setShowMenu] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const [statsLoading, setStatsLoading] = useState(true);
   const [plannedToday, setPlannedToday] = useState(0);
   const [presentToday, setPresentToday] = useState(0);
@@ -70,9 +70,11 @@ const [showMenu, setShowMenu] = useState(false);
   const [currentlyWorking, setCurrentlyWorking] = useState(0);
   const [trend, setTrend] = useState<DayTrend[]>([]);
   const [deptStats, setDeptStats] = useState<DeptStat[]>([]);
-  const [recentScans, setRecentScans] = useState<
-    { full_name: string; check_in: string | null; check_out: string | null; department: string | null }[]
-  >([]);
+  const [genderStats, setGenderStats] = useState<{
+    male: number;
+    female: number;
+    other: number;
+  }>({ male: 0, female: 0, other: 0 });
 
   const today = todayIST();
 
@@ -127,16 +129,28 @@ const [showMenu, setShowMenu] = useState(false);
   async function loadStats() {
     setStatsLoading(true);
     try {
-      // Active employees
+      // 1. Active employees (department + gender)
       const { data: emps, error: empError } = await supabase
         .from("employees")
-        .select("id, department")
+        .select("id, department, gender")
         .eq("is_active", true);
 
       if (empError) throw empError;
+
+      const empMap = new Map<
+        string,
+        { department: string | null; gender: string | null }
+      >();
+      (emps || []).forEach((e) => {
+        empMap.set(e.id, {
+          department: e.department || "Other",
+          gender: e.gender || null,
+        });
+      });
+
       const activeCount = emps?.length || 0;
 
-      // Today planned (roster SHIFT)
+      // 2. Today planned (roster SHIFT)
       const { data: todayRoster, error: rosterError } = await supabase
         .from("rosters")
         .select("employee_id")
@@ -145,12 +159,11 @@ const [showMenu, setShowMenu] = useState(false);
 
       if (rosterError) console.warn("Roster warning:", rosterError);
 
+      const plannedEmployeeIds = (todayRoster || []).map((r) => r.employee_id);
       const planned =
-        todayRoster && todayRoster.length > 0
-          ? todayRoster.length
-          : activeCount;
+        plannedEmployeeIds.length > 0 ? plannedEmployeeIds.length : activeCount;
 
-      // Today attendance
+      // 3. Today attendance
       const { data: todayAtt, error: attError } = await supabase
         .from("attendance")
         .select("employee_id, check_in, check_out, full_name, department")
@@ -163,15 +176,9 @@ const [showMenu, setShowMenu] = useState(false);
       const present = presentList.length;
       const working = presentList.filter((a) => !a.check_out).length;
 
-      // Simple late count (check-in after 09:15 IST as example – adjust as needed)
+      // Late (after 09:15 IST)
       const late = presentList.filter((a) => {
         if (!a.check_in) return false;
-        const d = new Date(a.check_in);
-        const mins =
-          d.getUTCHours() * 60 +
-          d.getUTCMinutes() +
-          330; // rough IST offset for comparison
-        // Better: use actual shift start later. For now use 9:15 threshold
         const hour = new Date(a.check_in).toLocaleString("en-IN", {
           timeZone: "Asia/Kolkata",
           hour: "2-digit",
@@ -179,7 +186,7 @@ const [showMenu, setShowMenu] = useState(false);
           hour12: false,
         });
         const [h, m] = hour.split(":").map(Number);
-        return h * 60 + m > 9 * 60 + 15; // after 09:15
+        return h * 60 + m > 9 * 60 + 15;
       }).length;
 
       setPlannedToday(planned);
@@ -187,28 +194,50 @@ const [showMenu, setShowMenu] = useState(false);
       setLateToday(late);
       setCurrentlyWorking(working);
 
-      // Recent scans (last 8)
-      setRecentScans(
-        presentList.slice(0, 8).map((a) => ({
-          full_name: a.full_name || "—",
-          check_in: a.check_in,
-          check_out: a.check_out,
-          department: a.department,
-        }))
-      );
+      // ── Gender breakdown (from present employees) ────────────────────
+      let male = 0;
+      let female = 0;
+      let other = 0;
 
-      // Department stats (today)
+      for (const a of presentList) {
+        const emp = empMap.get(a.employee_id);
+        const g = (emp?.gender || "").toLowerCase().trim();
+
+        if (g === "male" || g === "m") male++;
+        else if (g === "female" || g === "f") female++;
+        else other++;
+      }
+
+      setGenderStats({ male, female, other });
+
+      // ── Department Snapshot (Planned from Roster + Actual Present) ──
       const deptMap = new Map<string, { present: number; planned: number }>();
-      for (const e of emps || []) {
-        const dept = e.department || "Other";
+
+      // Planned from today's roster
+      for (const empId of plannedEmployeeIds) {
+        const emp = empMap.get(empId);
+        const dept = emp?.department || "Other";
         if (!deptMap.has(dept)) deptMap.set(dept, { present: 0, planned: 0 });
         deptMap.get(dept)!.planned += 1;
       }
+
+      // Fallback if no roster today → use all active employees
+      if (plannedEmployeeIds.length === 0) {
+        for (const e of emps || []) {
+          const dept = e.department || "Other";
+          if (!deptMap.has(dept)) deptMap.set(dept, { present: 0, planned: 0 });
+          deptMap.get(dept)!.planned += 1;
+        }
+      }
+
+      // Present counts
       for (const a of presentList) {
-        const dept = a.department || "Other";
+        const emp = empMap.get(a.employee_id);
+        const dept = emp?.department || a.department || "Other";
         if (!deptMap.has(dept)) deptMap.set(dept, { present: 0, planned: 0 });
         deptMap.get(dept)!.present += 1;
       }
+
       const deptArr = Array.from(deptMap.entries())
         .map(([department, v]) => ({
           department,
@@ -216,10 +245,11 @@ const [showMenu, setShowMenu] = useState(false);
           planned: v.planned,
         }))
         .sort((a, b) => b.present - a.present)
-        .slice(0, 6);
+        .slice(0, 8);
+
       setDeptStats(deptArr);
 
-      // Last 7 days trend
+      // ── Last 7 days trend ────────────────────────────────────────────
       const days: DayTrend[] = [];
       const now = new Date();
 
@@ -297,9 +327,7 @@ const [showMenu, setShowMenu] = useState(false);
 
   const absentToday = Math.max(0, plannedToday - presentToday);
   const attendancePct =
-    plannedToday > 0
-      ? Math.round((presentToday / plannedToday) * 100)
-      : 0;
+    plannedToday > 0 ? Math.round((presentToday / plannedToday) * 100) : 0;
 
   function hasPermission(permission: string) {
     return permissions.includes(permission);
@@ -327,128 +355,114 @@ const [showMenu, setShowMenu] = useState(false);
     <main className="min-h-screen bg-slate-100">
       {/* Header */}
       <header className="bg-white border-b border-slate-200 px-4 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowMenu(!showMenu)}
+              className="rounded-lg border border-slate-300 p-2 lg:hidden"
+            >
+              ☰
+            </button>
+            <h1 className="text-lg font-bold text-slate-800">
+              Attendance Portal
+            </h1>
+          </div>
 
-  <div className="flex items-center justify-between">
+          <div className="text-right">
+            <p className="text-sm font-medium text-slate-800">
+              {profile?.full_name}
+            </p>
+            <p className="text-xs text-slate-500 capitalize">
+              {profile?.role}
+            </p>
+          </div>
+        </div>
+      </header>
 
-    <div className="flex items-center gap-3">
-
-      <button
-        onClick={() => setShowMenu(!showMenu)}
-        className="rounded-lg border border-slate-300 p-2 lg:hidden"
-      >
-        ☰
-      </button>
-
-      <h1 className="text-lg font-bold text-slate-800">
-        Attendance Portal
-      </h1>
-
-    </div>
-
-    <div className="text-right">
-
-      <p className="text-sm font-medium text-slate-800">
-        {profile?.full_name}
-      </p>
-
-      <p className="text-xs text-slate-500 capitalize">
-        {profile?.role}
-      </p>
-
-    </div>
-
-  </div>
-
-</header>
-
-     <div className="flex flex-col lg:flex-row">
+      <div className="flex flex-col lg:flex-row">
         {/* Sidebar */}
         <aside
-  className={`
-    ${showMenu ? "block" : "hidden"}
-    lg:block
-    w-full
-    lg:w-64
-    bg-white
-    border-r
-    border-slate-200
-    p-4
-  `}
->
+          className={`
+            ${showMenu ? "block" : "hidden"}
+            lg:block
+            w-full
+            lg:w-64
+            bg-white
+            border-r
+            border-slate-200
+            p-4
+          `}
+        >
+          <nav className="space-y-2">
+            <a
+              href="/dashboard"
+              className="block rounded-lg bg-slate-100 px-4 py-3 text-sm"
+            >
+              Dashboard
+            </a>
 
-  <nav className="space-y-2">
+            {hasPermission("can_attendance") && (
+              <a
+                href="/attendance"
+                className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+              >
+                Attendance
+              </a>
+            )}
 
-    <a
-      href="/dashboard"
-      className="block rounded-lg bg-slate-100 px-4 py-3 text-sm"
-    >
-      Dashboard
-    </a>
+            {hasPermission("can_employees") && (
+              <a
+                href="/employees"
+                className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+              >
+                Employees
+              </a>
+            )}
 
-    {hasPermission("can_attendance") && (
-      <a
-        href="/attendance"
-        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
-      >
-        Attendance
-      </a>
-    )}
+            {hasPermission("can_roster") && (
+              <a
+                href="/roster"
+                className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+              >
+                Roster
+              </a>
+            )}
 
-    {hasPermission("can_employees") && (
-      <a
-        href="/employees"
-        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
-      >
-        Employees
-      </a>
-    )}
+            {hasPermission("can_reports") && (
+              <a
+                href="/reports"
+                className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+              >
+                Reports
+              </a>
+            )}
 
-    {hasPermission("can_roster") && (
-      <a
-        href="/roster"
-        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
-      >
-        Roster
-      </a>
-    )}
+            {hasPermission("can_staff") && (
+              <a
+                href="/staff"
+                className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+              >
+                Staff Management
+              </a>
+            )}
 
-    {hasPermission("can_reports") && (
-      <a
-        href="/reports"
-        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
-      >
-        Reports
-      </a>
-    )}
+            {hasPermission("can_settings") && (
+              <a
+                href="/settings"
+                className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
+              >
+                Settings
+              </a>
+            )}
 
-    {hasPermission("can_staff") && (
-      <a
-        href="/staff"
-        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
-      >
-        Staff Management
-      </a>
-    )}
-
-    {hasPermission("can_settings") && (
-      <a
-        href="/settings"
-        className="block rounded-lg px-4 py-3 text-sm hover:bg-slate-50"
-      >
-        Settings
-      </a>
-    )}
-
-    <button
-      onClick={handleLogout}
-      className="mt-4 w-full rounded-lg border border-slate-300 px-4 py-3 text-sm hover:bg-slate-50"
-    >
-      Logout
-    </button>
-
-  </nav>
-
-</aside>
+            <button
+              onClick={handleLogout}
+              className="mt-4 w-full rounded-lg border border-slate-300 px-4 py-3 text-sm hover:bg-slate-50"
+            >
+              Logout
+            </button>
+          </nav>
+        </aside>
 
         {/* Main */}
         <section className="flex-1 p-4 sm:p-6 lg:p-8">
@@ -471,7 +485,7 @@ const [showMenu, setShowMenu] = useState(false);
             )}
           </div>
 
-          {/* KPI Cards - Clickable */}
+          {/* KPI Cards */}
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <SummaryCard
               label="Planned Today"
@@ -483,25 +497,25 @@ const [showMenu, setShowMenu] = useState(false);
               label="Present"
               value={statsLoading ? "—" : presentToday}
               color="green"
-              href="/attendance"
+              href="/attendance?filter=present"
             />
             <SummaryCard
               label="Absent"
               value={statsLoading ? "—" : absentToday}
               color="red"
-              href="/attendance"
+              href="/attendance?filter=absent"
             />
             <SummaryCard
               label="Late Today"
               value={statsLoading ? "—" : lateToday}
               color="amber"
-              href="/attendance"
+              href="/attendance?filter=late"
             />
             <SummaryCard
               label="Currently Working"
               value={statsLoading ? "—" : currentlyWorking}
               color="blue"
-              href="/attendance"
+              href="/attendance?filter=working"
             />
             <SummaryCard
               label="Attendance %"
@@ -555,7 +569,9 @@ const [showMenu, setShowMenu] = useState(false);
                   <h3 className="text-sm font-semibold text-slate-800">
                     Department Snapshot
                   </h3>
-                  <p className="mt-0.5 text-xs text-slate-500">Today</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Planned (Roster) vs Actual Present
+                  </p>
                 </div>
                 <a
                   href="/reports"
@@ -599,58 +615,109 @@ const [showMenu, setShowMenu] = useState(false);
               )}
             </div>
 
-            {/* Recent Activity */}
+            {/* Present by Gender (replaced Recent Check-ins) */}
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-800">
-                    Recent Check-ins
+                    Present by Gender
                   </h3>
                   <p className="mt-0.5 text-xs text-slate-500">Today</p>
                 </div>
                 <a
-                  href="/attendance"
+                  href="/attendance?filter=present"
                   className="text-xs font-medium text-slate-500 hover:text-slate-800"
                 >
                   View all →
                 </a>
               </div>
 
-              {recentScans.length === 0 ? (
+              {statsLoading ? (
+                <p className="py-10 text-center text-sm text-slate-400">
+                  Loading...
+                </p>
+              ) : presentToday === 0 ? (
                 <p className="py-10 text-center text-sm text-slate-400">
                   No check-ins yet today
                 </p>
               ) : (
-                <div className="space-y-2">
-                  {recentScans.map((scan, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/50 px-3 py-2.5"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-slate-800">
-                          {scan.full_name}
-                        </p>
-                        <p className="truncate text-xs text-slate-500">
-                          {scan.department || "—"}
-                        </p>
+                <div className="space-y-5">
+                  {/* Male */}
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between text-sm">
+                      <span className="font-medium text-slate-700">Male</span>
+                      <span className="font-semibold text-blue-700">
+                        {genderStats.male}
+                      </span>
+                    </div>
+                    <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-blue-500 transition-all"
+                        style={{
+                          width: `${
+                            presentToday > 0
+                              ? (genderStats.male / presentToday) * 100
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Female */}
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between text-sm">
+                      <span className="font-medium text-slate-700">Female</span>
+                      <span className="font-semibold text-pink-600">
+                        {genderStats.female}
+                      </span>
+                    </div>
+                    <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-pink-500 transition-all"
+                        style={{
+                          width: `${
+                            presentToday > 0
+                              ? (genderStats.female / presentToday) * 100
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Other */}
+                  {genderStats.other > 0 && (
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between text-sm">
+                        <span className="font-medium text-slate-700">
+                          Other / Not set
+                        </span>
+                        <span className="font-semibold text-slate-600">
+                          {genderStats.other}
+                        </span>
                       </div>
-                      <div className="ml-3 shrink-0 text-right text-xs">
-                        {scan.check_in && (
-                          <p className="font-medium text-green-700">
-                            In {formatTimeIST(scan.check_in)}
-                          </p>
-                        )}
-                        {scan.check_out ? (
-                          <p className="text-orange-600">
-                            Out {formatTimeIST(scan.check_out)}
-                          </p>
-                        ) : (
-                          <p className="text-slate-400">Still working</p>
-                        )}
+                      <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-slate-400 transition-all"
+                          style={{
+                            width: `${
+                              presentToday > 0
+                                ? (genderStats.other / presentToday) * 100
+                                : 0
+                            }%`,
+                          }}
+                        />
                       </div>
                     </div>
-                  ))}
+                  )}
+
+                  <div className="pt-2 text-center text-xs text-slate-500">
+                    Total Present:{" "}
+                    <span className="font-semibold text-slate-700">
+                      {presentToday}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -1041,7 +1108,6 @@ function PresentAbsentBarChart({ data }: { data: DayTrend[] }) {
 
           return (
             <g key={d.date}>
-              {/* Present bar */}
               <rect
                 x={cx - barWidth - gap / 2}
                 y={pad.top + innerH - presentH}
@@ -1050,7 +1116,6 @@ function PresentAbsentBarChart({ data }: { data: DayTrend[] }) {
                 rx="4"
                 fill="#22c55e"
               />
-              {/* Absent bar */}
               <rect
                 x={cx + gap / 2}
                 y={pad.top + innerH - absentH}
@@ -1059,7 +1124,6 @@ function PresentAbsentBarChart({ data }: { data: DayTrend[] }) {
                 rx="4"
                 fill="#f87171"
               />
-              {/* Labels */}
               <text
                 x={cx}
                 y={height - 16}

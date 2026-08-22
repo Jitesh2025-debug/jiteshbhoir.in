@@ -1,8 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import MainMenu from "@/components/MainMenu";
 import { createClient } from "@/lib/supabase";
+
+type SkillLevel = "SKILLED" | "SEMI_SKILLED" | "UNSKILLED";
 
 type Employee = {
   id: string;
@@ -11,8 +13,10 @@ type Employee = {
   full_name: string;
   department: string | null;
   designation: string | null;
-  employment_type: "BLUE_COLLAR" | "ASSOCIATE";
+  employment_type: SkillLevel;
   gender: "Male" | "Female" | "Other" | null;
+  vendor: string | null;
+  customer_account: string | null;
   joining_date: string | null;
   is_active: boolean;
   created_at: string;
@@ -24,8 +28,10 @@ type EmployeeForm = {
   full_name: string;
   department: string;
   designation: string;
-  employment_type: "BLUE_COLLAR" | "ASSOCIATE";
+  employment_type: SkillLevel;
   gender: "Male" | "Female" | "Other" | "";
+  vendor: string;
+  customer_account: string;
   joining_date: string;
 };
 
@@ -35,11 +41,16 @@ type BulkRow = {
   full_name: string;
   department: string;
   designation: string;
-  employment_type: "BLUE_COLLAR" | "ASSOCIATE";
+  employment_type: SkillLevel;
   gender: "Male" | "Female" | "Other" | "";
+  vendor: string;
+  customer_account: string;
   joining_date: string;
   error?: string;
+  _existingId?: string;
 };
+
+type ModalMode = "single" | "bulk_add" | "bulk_edit";
 
 const EMPTY_FORM: EmployeeForm = {
   employee_code: "",
@@ -47,19 +58,27 @@ const EMPTY_FORM: EmployeeForm = {
   full_name: "",
   department: "",
   designation: "",
-  employment_type: "BLUE_COLLAR",
+  employment_type: "UNSKILLED",
   gender: "",
+  vendor: "",
+  customer_account: "",
   joining_date: "",
 };
 
-function normalizeEmploymentType(
-  value: string
-): "BLUE_COLLAR" | "ASSOCIATE" {
+function normalizeSkillLevel(value: string): SkillLevel {
   const v = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
-  if (v === "ASSOCIATE" || v === "ASSOC" || v === "A") {
-    return "ASSOCIATE";
-  }
-  return "BLUE_COLLAR";
+  if (v === "SKILLED" || v === "S") return "SKILLED";
+  if (v === "SEMI_SKILLED" || v === "SEMI" || v === "SS" || v === "SEMI_SKILL")
+    return "SEMI_SKILLED";
+  if (v === "ASSOCIATE" || v === "ASSOC" || v === "A") return "SEMI_SKILLED";
+  if (v === "BLUE_COLLAR" || v === "BLUE" || v === "BC") return "UNSKILLED";
+  return "UNSKILLED";
+}
+
+function skillLabel(t: SkillLevel) {
+  if (t === "SKILLED") return "Skilled";
+  if (t === "SEMI_SKILLED") return "Semi-Skilled";
+  return "Unskilled";
 }
 
 function normalizeGender(value: string): "Male" | "Female" | "Other" | "" {
@@ -70,13 +89,13 @@ function normalizeGender(value: string): "Male" | "Female" | "Other" | "" {
   return "";
 }
 
+/** Columns: EmpID | Barcode | Name | Dept | Designation | Type | Gender | Vendor | CustomerAccount | JoiningDate */
 function parseBulkText(raw: string): BulkRow[] {
   const lines = raw
     .trim()
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
-
   if (lines.length === 0) return [];
 
   const firstLine = lines[0];
@@ -86,7 +105,7 @@ function parseBulkText(raw: string): BulkRow[] {
       ? ","
       : "\t";
 
-  const rows: string[][] = lines.map((line) =>
+  const rows = lines.map((line) =>
     line.split(delimiter).map((cell) => cell.trim().replace(/^"|"$/g, ""))
   );
 
@@ -98,21 +117,22 @@ function parseBulkText(raw: string): BulkRow[] {
     firstCells.includes("barcode") ||
     firstCells.includes("full_name") ||
     firstCells.includes("name") ||
-    firstCells.includes("gender");
+    firstCells.includes("gender") ||
+    firstCells.includes("vendor");
 
   const dataRows = looksLikeHeader ? rows.slice(1) : rows;
 
   return dataRows.map((cells) => {
-    // New order:
-    // 0: employee_code | 1: barcode | 2: full_name | 3: department | 4: designation | 5: employment_type | 6: gender | 7: joining_date
     const employee_code = (cells[0] || "").toUpperCase();
     const barcode = cells[1] || "";
     const full_name = cells[2] || "";
     const department = cells[3] || "";
     const designation = cells[4] || "";
-    const employment_type = normalizeEmploymentType(cells[5] || "BLUE_COLLAR");
+    const employment_type = normalizeSkillLevel(cells[5] || "UNSKILLED");
     const gender = normalizeGender(cells[6] || "");
-    let joining_date = cells[7] || "";
+    const vendor = cells[7] || "";
+    const customer_account = cells[8] || "";
+    let joining_date = cells[9] || "";
 
     if (joining_date) {
       const dmy = joining_date.match(
@@ -131,6 +151,8 @@ function parseBulkText(raw: string): BulkRow[] {
       designation,
       employment_type,
       gender,
+      vendor,
+      customer_account,
       joining_date,
     };
 
@@ -138,17 +160,14 @@ function parseBulkText(raw: string): BulkRow[] {
     if (!employee_code) errors.push("Employee ID required");
     if (!barcode) errors.push("Barcode required");
     if (!full_name) errors.push("Name required");
-
-    if (errors.length) {
-      row.error = errors.join(", ");
-    }
-
+    if (errors.length) row.error = errors.join(", ");
     return row;
   });
 }
 
 export default function EmployeesPage() {
   const supabase = createClient();
+
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -158,10 +177,48 @@ export default function EmployeesPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  const [addMode, setAddMode] = useState<"single" | "bulk">("single");
+  const [modalMode, setModalMode] = useState<ModalMode>("single");
   const [bulkText, setBulkText] = useState("");
   const [bulkRows, setBulkRows] = useState<BulkRow[]>([]);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [pendingBulkAction, setPendingBulkAction] = useState<
+    "add" | "edit" | null
+  >(null);
+
+  // ── Admin check ──────────────────────────────────────────────────────────
+  async function checkAdmin() {
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setIsAdmin(false);
+        return;
+      }
+      const metaRole =
+        String(user.app_metadata?.role || user.user_metadata?.role || "")
+          .toLowerCase()
+          .replace(/-/g, "_");
+      if (["admin", "super_admin", "superadmin"].includes(metaRole)) {
+        setIsAdmin(true);
+        return;
+      }
+      // Optional profiles table
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .maybeSingle();
+      const pRole = String(profile?.role || "")
+        .toLowerCase()
+        .replace(/-/g, "_");
+      setIsAdmin(["admin", "super_admin", "superadmin"].includes(pRole));
+    } catch {
+      setIsAdmin(false);
+    }
+  }
 
   async function loadEmployees() {
     setLoading(true);
@@ -169,46 +226,101 @@ export default function EmployeesPage() {
     const { data, error: loadError } = await supabase
       .from("employees")
       .select(
-        "id, employee_code, barcode, full_name, department, designation, employment_type, gender, joining_date, is_active, created_at"
+        "id, employee_code, barcode, full_name, department, designation, employment_type, gender, vendor, customer_account, joining_date, is_active, created_at"
       )
       .order("full_name", { ascending: true });
 
     if (loadError) {
-      console.error("Employee load error:", loadError);
+      console.error(loadError);
       setError(loadError.message);
       setLoading(false);
       return;
     }
-    setEmployees(data || []);
+    setEmployees((data || []) as Employee[]);
     setLoading(false);
   }
 
   useEffect(() => {
+    checkAdmin();
     loadEmployees();
   }, []);
 
-  const filteredEmployees = useMemo(() => {
-    const value = search.trim().toLowerCase();
-    if (!value) return employees;
-    return employees.filter((employee) => {
-      return (
-        employee.employee_code.toLowerCase().includes(value) ||
-        employee.barcode.toLowerCase().includes(value) ||
-        employee.full_name.toLowerCase().includes(value) ||
-        (employee.department || "").toLowerCase().includes(value) ||
-        (employee.designation || "").toLowerCase().includes(value) ||
-        (employee.gender || "").toLowerCase().includes(value)
-      );
-    });
-  }, [employees, search]);
+  // ── Bulk parse + match ───────────────────────────────────────────────────
+  const applyBulkParse = useCallback(
+    (text: string, mode: ModalMode) => {
+      if (!text.trim()) {
+        setBulkRows([]);
+        return;
+      }
+      let parsed = parseBulkText(text);
 
+      if (mode === "bulk_edit") {
+        const byCode = new Map(
+          employees.map((e) => [e.employee_code.toUpperCase(), e])
+        );
+        parsed = parsed.map((row) => {
+          const existing = byCode.get(row.employee_code);
+          if (!existing) {
+            return {
+              ...row,
+              error: row.error
+                ? `${row.error}; Not found for edit`
+                : "Employee ID not found (cannot edit)",
+            };
+          }
+          return { ...row, _existingId: existing.id };
+        });
+      }
+
+      setBulkRows(parsed);
+    },
+    [employees]
+  );
+
+  function handleBulkTextChange(value: string) {
+    setBulkText(value);
+    applyBulkParse(value, modalMode);
+  }
+
+  function switchModalMode(mode: ModalMode) {
+    setModalMode(mode);
+    setError("");
+    if (bulkText.trim()) applyBulkParse(bulkText, mode);
+  }
+
+  const validBulkCount = bulkRows.filter((r) => !r.error).length;
+  const invalidBulkCount = bulkRows.length - validBulkCount;
+
+  // ── Open modals ──────────────────────────────────────────────────────────
   function openAddModal() {
     setEditingEmployee(null);
     setForm({
       ...EMPTY_FORM,
       joining_date: new Date().toISOString().slice(0, 10),
     });
-    setAddMode("single");
+    setModalMode("single");
+    setBulkText("");
+    setBulkRows([]);
+    setError("");
+    setSuccess("");
+    setShowModal(true);
+  }
+
+  function openBulkAdd() {
+    setEditingEmployee(null);
+    setForm(EMPTY_FORM);
+    setModalMode("bulk_add");
+    setBulkText("");
+    setBulkRows([]);
+    setError("");
+    setSuccess("");
+    setShowModal(true);
+  }
+
+  function openBulkEdit() {
+    setEditingEmployee(null);
+    setForm(EMPTY_FORM);
+    setModalMode("bulk_edit");
     setBulkText("");
     setBulkRows([]);
     setError("");
@@ -224,11 +336,13 @@ export default function EmployeesPage() {
       full_name: employee.full_name,
       department: employee.department || "",
       designation: employee.designation || "",
-      employment_type: employee.employment_type,
+      employment_type: employee.employment_type || "UNSKILLED",
       gender: employee.gender || "",
+      vendor: employee.vendor || "",
+      customer_account: employee.customer_account || "",
       joining_date: employee.joining_date || "",
     });
-    setAddMode("single");
+    setModalMode("single");
     setBulkText("");
     setBulkRows([]);
     setError("");
@@ -241,52 +355,56 @@ export default function EmployeesPage() {
     setShowModal(false);
     setEditingEmployee(null);
     setForm(EMPTY_FORM);
-    setAddMode("single");
+    setModalMode("single");
     setBulkText("");
     setBulkRows([]);
     setError("");
+    setShowConfirm(false);
+    setPendingBulkAction(null);
   }
 
   function updateForm(field: keyof EmployeeForm, value: string) {
-    setForm((current) => ({
-      ...current,
-      [field]: value,
-    }));
+    setForm((c) => ({ ...c, [field]: value }));
   }
 
-  function handleBulkTextChange(value: string) {
-    setBulkText(value);
-    if (!value.trim()) {
-      setBulkRows([]);
+  // ── Bulk execute ─────────────────────────────────────────────────────────
+  function requestBulkSubmit() {
+    if (!isAdmin) {
+      setError(
+        "Only admins can bulk add or bulk edit. Set your user role to admin."
+      );
       return;
     }
-    setBulkRows(parseBulkText(value));
+    if (validBulkCount === 0) {
+      setError(
+        modalMode === "bulk_edit"
+          ? "No valid rows to update. Fix errors or ensure Employee IDs exist."
+          : "No valid rows to import. Fix errors in the preview."
+      );
+      return;
+    }
+    setPendingBulkAction(modalMode === "bulk_edit" ? "edit" : "add");
+    setShowConfirm(true);
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function executeBulk() {
+    if (!pendingBulkAction) return;
+    if (!isAdmin) {
+      setError("Only admins can perform bulk operations.");
+      setShowConfirm(false);
+      return;
+    }
+
+    setShowConfirm(false);
+    setSaving(true);
     setError("");
     setSuccess("");
 
-    // ─── BULK MODE ───────────────────────────────────────────────
-    if (addMode === "bulk" && !editingEmployee) {
-      if (bulkRows.length === 0) {
-        setError("Please paste employee data first.");
-        return;
-      }
+    const validRows = bulkRows.filter((r) => !r.error);
 
-      const validRows = bulkRows.filter((r) => !r.error);
-      const invalidCount = bulkRows.length - validRows.length;
-
-      if (validRows.length === 0) {
-        setError(
-          "No valid rows to import. Please fix the errors shown in the preview."
-        );
-        return;
-      }
-
-      setSaving(true);
-      try {
+    try {
+      if (pendingBulkAction === "add") {
+        // ── BULK ADD ─────────────────────────────────────────────────────
         const payload = validRows.map((row) => ({
           employee_code: row.employee_code,
           barcode: row.barcode,
@@ -295,6 +413,8 @@ export default function EmployeesPage() {
           designation: row.designation.trim() || null,
           employment_type: row.employment_type,
           gender: row.gender || null,
+          vendor: row.vendor.trim() || null,
+          customer_account: row.customer_account.trim() || null,
           joining_date: row.joining_date || null,
           is_active: true,
         }));
@@ -306,7 +426,7 @@ export default function EmployeesPage() {
         if (insertError) {
           if (insertError.code === "23505") {
             setError(
-              "One or more Employee IDs or Barcodes already exist. Please remove duplicates and try again."
+              "One or more Employee IDs or Barcodes already exist. Remove duplicates and try again."
             );
           } else {
             throw insertError;
@@ -314,26 +434,83 @@ export default function EmployeesPage() {
           return;
         }
 
-        const msg =
-          invalidCount > 0
-            ? `${validRows.length} employees added. ${invalidCount} row(s) skipped due to errors.`
-            : `${validRows.length} employees added successfully.`;
-        setSuccess(msg);
-        setShowModal(false);
-        setBulkText("");
-        setBulkRows([]);
-        setForm(EMPTY_FORM);
-        await loadEmployees();
-      } catch (err: any) {
-        console.error("Bulk employee save error:", err);
-        setError(err?.message || "Unable to save employees.");
-      } finally {
-        setSaving(false);
+        setSuccess(
+          invalidBulkCount > 0
+            ? `${validRows.length} employees added. ${invalidBulkCount} row(s) skipped.`
+            : `${validRows.length} employees added successfully.`
+        );
+      } else {
+        // ── BULK EDIT ────────────────────────────────────────────────────
+        let updated = 0;
+        const failMessages: string[] = [];
+
+        for (const row of validRows) {
+          if (!row._existingId) continue;
+
+          const { error: updateError } = await supabase
+            .from("employees")
+            .update({
+              barcode: row.barcode,
+              full_name: row.full_name,
+              department: row.department.trim() || null,
+              designation: row.designation.trim() || null,
+              employment_type: row.employment_type,
+              gender: row.gender || null,
+              vendor: row.vendor.trim() || null,
+              customer_account: row.customer_account.trim() || null,
+              joining_date: row.joining_date || null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row._existingId);
+
+          if (updateError) {
+            failMessages.push(`${row.employee_code}: ${updateError.message}`);
+          } else {
+            updated++;
+          }
+        }
+
+        if (updated === 0 && failMessages.length) {
+          setError(failMessages.slice(0, 3).join("; "));
+          return;
+        }
+
+        setSuccess(
+          failMessages.length
+            ? `${updated} updated. ${failMessages.length} failed.`
+            : `${updated} employees updated successfully.`
+        );
       }
+
+      setShowModal(false);
+      setBulkText("");
+      setBulkRows([]);
+      setForm(EMPTY_FORM);
+      setPendingBulkAction(null);
+      await loadEmployees();
+    } catch (err: any) {
+      console.error("Bulk save error:", err);
+      setError(err?.message || "Unable to save employees.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ── Single submit ────────────────────────────────────────────────────────
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setSuccess("");
+
+    // Bulk → confirm dialog
+    if (
+      (modalMode === "bulk_add" || modalMode === "bulk_edit") &&
+      !editingEmployee
+    ) {
+      requestBulkSubmit();
       return;
     }
 
-    // ─── SINGLE MODE ─────────────────────────────────────────────
     const employeeCode = form.employee_code.trim().toUpperCase();
     const barcode = form.barcode.trim();
     const fullName = form.full_name.trim();
@@ -364,6 +541,8 @@ export default function EmployeesPage() {
             designation: form.designation.trim() || null,
             employment_type: form.employment_type,
             gender: form.gender || null,
+            vendor: form.vendor.trim() || null,
+            customer_account: form.customer_account.trim() || null,
             joining_date: form.joining_date || null,
             updated_at: new Date().toISOString(),
           })
@@ -382,6 +561,8 @@ export default function EmployeesPage() {
             designation: form.designation.trim() || null,
             employment_type: form.employment_type,
             gender: form.gender || null,
+            vendor: form.vendor.trim() || null,
+            customer_account: form.customer_account.trim() || null,
             joining_date: form.joining_date || null,
             is_active: true,
           });
@@ -402,7 +583,7 @@ export default function EmployeesPage() {
       setForm(EMPTY_FORM);
       await loadEmployees();
     } catch (err: any) {
-      console.error("Employee save error:", err);
+      console.error(err);
       setError(err?.message || "Unable to save employee.");
     } finally {
       setSaving(false);
@@ -413,10 +594,8 @@ export default function EmployeesPage() {
     setError("");
     setSuccess("");
     const action = employee.is_active ? "deactivate" : "activate";
-    const confirmed = window.confirm(
-      `Are you sure you want to ${action} ${employee.full_name}?`
-    );
-    if (!confirmed) return;
+    if (!window.confirm(`Are you sure you want to ${action} ${employee.full_name}?`))
+      return;
 
     const { error: updateError } = await supabase
       .from("employees")
@@ -427,11 +606,9 @@ export default function EmployeesPage() {
       .eq("id", employee.id);
 
     if (updateError) {
-      console.error("Employee status error:", updateError);
       setError(updateError.message);
       return;
     }
-
     setSuccess(
       employee.is_active
         ? "Employee deactivated successfully."
@@ -440,55 +617,91 @@ export default function EmployeesPage() {
     await loadEmployees();
   }
 
-  const validBulkCount = bulkRows.filter((r) => !r.error).length;
-  const invalidBulkCount = bulkRows.length - validBulkCount;
+  const filteredEmployees = useMemo(() => {
+    const value = search.trim().toLowerCase();
+    if (!value) return employees;
+    return employees.filter((e) => {
+      return (
+        e.employee_code.toLowerCase().includes(value) ||
+        e.barcode.toLowerCase().includes(value) ||
+        e.full_name.toLowerCase().includes(value) ||
+        (e.department || "").toLowerCase().includes(value) ||
+        (e.designation || "").toLowerCase().includes(value) ||
+        (e.gender || "").toLowerCase().includes(value) ||
+        (e.vendor || "").toLowerCase().includes(value) ||
+        (e.customer_account || "").toLowerCase().includes(value) ||
+        skillLabel(e.employment_type).toLowerCase().includes(value)
+      );
+    });
+  }, [employees, search]);
 
   return (
-    <main className="min-h-screen bg-slate-100 px-4 py-6 md:px-6">
-      <div className="mx-auto max-w-[1500px]">
+    <main className="min-h-screen bg-slate-100 px-3 py-4 md:px-5">
+      <div className="mx-auto max-w-[1600px]">
         <MainMenu />
 
-        {/* HEADER */}
-        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        {/* HEADER — Bulk Add / Bulk Edit always visible */}
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">
+            <h1 className="text-lg font-bold text-slate-800">
               Employee Management
             </h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Manage blue-collar and associate employees for attendance.
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Manage skilled, semi-skilled and unskilled employees.
+              {!isAdmin && (
+                <span className="ml-1 text-amber-600">
+                  (Bulk requires admin role)
+                </span>
+              )}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={openAddModal}
-            className="rounded-lg bg-slate-800 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700"
-          >
-            + Add Employee
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={openBulkAdd}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Bulk Add
+            </button>
+            <button
+              type="button"
+              onClick={openBulkEdit}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Bulk Edit
+            </button>
+            <button
+              type="button"
+              onClick={openAddModal}
+              className="rounded-md bg-slate-800 px-3.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-700"
+            >
+              + Add Employee
+            </button>
+          </div>
         </div>
 
-        {/* SEARCH / SUMMARY */}
-        <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="relative w-full md:max-w-md">
+        {/* SEARCH */}
+        <div className="mb-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative w-full sm:max-w-sm">
               <input
                 type="text"
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search name, Employee ID, barcode or gender..."
-                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search name, ID, barcode, vendor, account..."
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200"
               />
               {search && (
                 <button
                   type="button"
                   onClick={() => setSearch("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 hover:text-slate-700"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-700"
                 >
                   ×
                 </button>
               )}
             </div>
-            <div className="flex gap-5 text-sm">
+            <div className="flex gap-4 text-[11px]">
               <div>
                 <span className="text-slate-400">Total</span>{" "}
                 <strong className="text-slate-700">{employees.length}</strong>
@@ -509,68 +722,61 @@ export default function EmployeesPage() {
           </div>
         </div>
 
-        {/* ALERTS */}
-        {error && (
-          <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        {error && !showModal && (
+          <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
             {error}
           </div>
         )}
         {success && (
-          <div className="mb-5 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+          <div className="mb-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700">
             {success}
           </div>
         )}
 
         {/* TABLE */}
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1100px] border-collapse">
+            <table className="w-full min-w-[1200px] border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50">
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Employee
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Barcode
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Gender
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Department
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Designation
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Type
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Action
-                  </th>
+                  {[
+                    "Employee",
+                    "Barcode",
+                    "Gender",
+                    "Department",
+                    "Designation",
+                    "Type",
+                    "Vendor",
+                    "Customer Account",
+                    "Status",
+                    "Action",
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 ${
+                        h === "Action" ? "text-right" : "text-left"
+                      }`}
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
                     <td
-                      colSpan={8}
-                      className="px-6 py-12 text-center text-sm text-slate-400"
+                      colSpan={10}
+                      className="px-4 py-10 text-center text-xs text-slate-400"
                     >
                       Loading employees...
                     </td>
                   </tr>
                 ) : filteredEmployees.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center">
-                      <div className="text-sm font-medium text-slate-500">
+                    <td colSpan={10} className="px-4 py-10 text-center">
+                      <div className="text-xs font-medium text-slate-500">
                         No employees found.
-                      </div>
-                      <div className="mt-1 text-xs text-slate-400">
-                        Add an employee or change your search.
                       </div>
                     </td>
                   </tr>
@@ -578,63 +784,75 @@ export default function EmployeesPage() {
                   filteredEmployees.map((employee) => (
                     <tr
                       key={employee.id}
-                      className="border-b border-slate-100 last:border-0 hover:bg-slate-50"
+                      className="border-b border-slate-100 last:border-0 hover:bg-slate-50/80"
                     >
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2">
                         <div className="font-medium text-slate-800">
                           {employee.full_name}
                         </div>
-                        <div className="mt-0.5 text-xs font-medium text-slate-400">
+                        <div className="mt-0.5 text-[10px] font-medium text-slate-400">
                           {employee.employee_code}
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="rounded-md bg-slate-100 px-2 py-1 font-mono text-xs text-slate-700">
+                      <td className="px-3 py-2">
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
                           {employee.barcode}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-sm text-slate-600">
+                      <td className="px-3 py-2 text-slate-600">
                         {employee.gender || "—"}
                       </td>
-                      <td className="px-4 py-3 text-sm text-slate-600">
+                      <td className="px-3 py-2 text-slate-600">
                         {employee.department || "—"}
                       </td>
-                      <td className="px-4 py-3 text-sm text-slate-600">
+                      <td className="px-3 py-2 text-slate-600">
                         {employee.designation || "—"}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700">
-                          {employee.employment_type === "BLUE_COLLAR"
-                            ? "Blue Collar"
-                            : "Associate"}
+                      <td className="px-3 py-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            employee.employment_type === "SKILLED"
+                              ? "bg-emerald-50 text-emerald-700"
+                              : employee.employment_type === "SEMI_SKILLED"
+                                ? "bg-amber-50 text-amber-700"
+                                : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {skillLabel(employee.employment_type)}
                         </span>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2 text-slate-600">
+                        {employee.vendor || "—"}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600">
+                        {employee.customer_account || "—"}
+                      </td>
+                      <td className="px-3 py-2">
                         {employee.is_active ? (
-                          <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 px-2.5 py-1 text-[11px] font-semibold text-green-700">
-                            <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-semibold text-green-700">
+                            <span className="h-1 w-1 rounded-full bg-green-500" />
                             Active
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-600">
-                            <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+                          <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600">
+                            <span className="h-1 w-1 rounded-full bg-red-500" />
                             Inactive
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex justify-end gap-2">
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex justify-end gap-1.5">
                           <button
                             type="button"
                             onClick={() => openEditModal(employee)}
-                            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                            className="rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-100"
                           >
                             Edit
                           </button>
                           <button
                             type="button"
                             onClick={() => toggleEmployee(employee)}
-                            className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                            className={`rounded border px-2 py-1 text-[10px] font-medium ${
                               employee.is_active
                                 ? "border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
                                 : "border-green-200 bg-green-50 text-green-700 hover:bg-green-100"
@@ -652,63 +870,63 @@ export default function EmployeesPage() {
           </div>
         </div>
 
-        {/* ADD / EDIT MODAL */}
+        {/* MODAL */}
         {showModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 p-4">
-            <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-              {/* MODAL HEADER */}
-              <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 p-3">
+            <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+              <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-800">
-                    {editingEmployee ? "Edit Employee" : "Add Employee"}
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    {editingEmployee
+                      ? "Edit Employee"
+                      : modalMode === "bulk_edit"
+                        ? "Bulk Edit Employees"
+                        : modalMode === "bulk_add"
+                          ? "Bulk Add Employees"
+                          : "Add Employee"}
                   </h2>
-                  <p className="mt-0.5 text-xs text-slate-500">
+                  <p className="mt-0.5 text-[10px] text-slate-500">
                     {editingEmployee
                       ? "Update employee information."
-                      : "Add a blue-collar or associate employee (single or bulk)."}
+                      : modalMode === "bulk_edit"
+                        ? "Paste rows matched by Employee ID to update existing records."
+                        : modalMode === "bulk_add"
+                          ? "Paste Excel rows to create new employees."
+                          : "Add a skilled, semi-skilled or unskilled employee."}
                   </p>
                 </div>
                 <button
                   type="button"
                   disabled={saving}
                   onClick={closeModal}
-                  className="rounded-lg px-3 py-1 text-xl text-slate-400 hover:bg-slate-100"
+                  className="rounded px-2 py-0.5 text-lg text-slate-400 hover:bg-slate-100"
                 >
                   ×
                 </button>
               </div>
 
-              {/* MODE TOGGLE */}
               {!editingEmployee && (
-                <div className="flex shrink-0 gap-1 border-b border-slate-200 bg-slate-50 px-5 py-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddMode("single");
-                      setError("");
-                    }}
-                    className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${
-                      addMode === "single"
-                        ? "bg-white text-slate-800 shadow-sm"
-                        : "text-slate-500 hover:text-slate-700"
-                    }`}
-                  >
-                    Single
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddMode("bulk");
-                      setError("");
-                    }}
-                    className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${
-                      addMode === "bulk"
-                        ? "bg-white text-slate-800 shadow-sm"
-                        : "text-slate-500 hover:text-slate-700"
-                    }`}
-                  >
-                    Bulk Paste
-                  </button>
+                <div className="flex shrink-0 gap-1 border-b border-slate-200 bg-slate-50 px-4 py-1.5">
+                  {(
+                    [
+                      ["single", "Single"],
+                      ["bulk_add", "Bulk Add"],
+                      ["bulk_edit", "Bulk Edit"],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => switchModalMode(mode)}
+                      className={`rounded-md px-3 py-1 text-[11px] font-medium transition ${
+                        modalMode === mode
+                          ? "bg-white text-slate-800 shadow-sm"
+                          : "text-slate-500 hover:text-slate-700"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               )}
 
@@ -716,45 +934,34 @@ export default function EmployeesPage() {
                 onSubmit={handleSubmit}
                 className="flex min-h-0 flex-1 flex-col"
               >
-                <div className="flex-1 overflow-y-auto p-5">
-                  {/* ─── SINGLE FORM ─── */}
-                  {(addMode === "single" || editingEmployee) && (
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                          Employee ID *
-                        </label>
-                        <input
-                          type="text"
-                          value={form.employee_code}
-                          onChange={(e) =>
-                            updateForm("employee_code", e.target.value)
-                          }
-                          placeholder="EMP001"
-                          disabled={saving}
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm uppercase outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                          Barcode *
-                        </label>
-                        <input
-                          type="text"
-                          value={form.barcode}
-                          onChange={(e) =>
-                            updateForm("barcode", e.target.value)
-                          }
-                          placeholder="Scan or enter barcode"
-                          disabled={saving}
-                          autoComplete="off"
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 font-mono text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
-                        />
-                      </div>
-
-                      <div className="md:col-span-2">
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+                <div className="flex-1 overflow-y-auto p-4">
+                  {/* SINGLE */}
+                  {(modalMode === "single" || editingEmployee) && (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      {(
+                        [
+                          ["employee_code", "Employee ID *", "EMP001", true],
+                          ["barcode", "Barcode *", "Scan or enter", true],
+                        ] as const
+                      ).map(([field, label, ph, upper]) => (
+                        <div key={field}>
+                          <label className="mb-1 block text-[10px] font-semibold text-slate-600">
+                            {label}
+                          </label>
+                          <input
+                            type="text"
+                            value={form[field]}
+                            onChange={(e) => updateForm(field, e.target.value)}
+                            placeholder={ph}
+                            disabled={saving}
+                            className={`w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200 disabled:bg-slate-100 ${
+                              upper || field === "barcode" ? "font-mono" : ""
+                            } ${upper ? "uppercase" : ""}`}
+                          />
+                        </div>
+                      ))}
+                      <div className="sm:col-span-2">
+                        <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Full Name *
                         </label>
                         <input
@@ -765,21 +972,18 @@ export default function EmployeesPage() {
                           }
                           placeholder="Employee full name"
                           disabled={saving}
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
+                          className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200 disabled:bg-slate-100"
                         />
                       </div>
-
                       <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+                        <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Gender
                         </label>
                         <select
                           value={form.gender}
-                          onChange={(e) =>
-                            updateForm("gender", e.target.value)
-                          }
+                          onChange={(e) => updateForm("gender", e.target.value)}
                           disabled={saving}
-                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
+                          className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200 disabled:bg-slate-100"
                         >
                           <option value="">Select Gender</option>
                           <option value="Male">Male</option>
@@ -787,10 +991,9 @@ export default function EmployeesPage() {
                           <option value="Other">Other</option>
                         </select>
                       </div>
-
                       <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                          Employee Type
+                        <label className="mb-1 block text-[10px] font-semibold text-slate-600">
+                          Skill Type
                         </label>
                         <select
                           value={form.employment_type}
@@ -798,47 +1001,37 @@ export default function EmployeesPage() {
                             updateForm("employment_type", e.target.value)
                           }
                           disabled={saving}
-                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
+                          className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200 disabled:bg-slate-100"
                         >
-                          <option value="BLUE_COLLAR">Blue Collar</option>
-                          <option value="ASSOCIATE">Associate</option>
+                          <option value="SKILLED">Skilled</option>
+                          <option value="SEMI_SKILLED">Semi-Skilled</option>
+                          <option value="UNSKILLED">Unskilled</option>
                         </select>
                       </div>
-
+                      {(
+                        [
+                          ["department", "Department", "Outbound"],
+                          ["designation", "Designation", "Picker"],
+                          ["vendor", "Vendor", "Vendor name"],
+                          ["customer_account", "Customer Account", "Account"],
+                        ] as const
+                      ).map(([field, label, ph]) => (
+                        <div key={field}>
+                          <label className="mb-1 block text-[10px] font-semibold text-slate-600">
+                            {label}
+                          </label>
+                          <input
+                            type="text"
+                            value={form[field]}
+                            onChange={(e) => updateForm(field, e.target.value)}
+                            placeholder={ph}
+                            disabled={saving}
+                            className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200 disabled:bg-slate-100"
+                          />
+                        </div>
+                      ))}
                       <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                          Department
-                        </label>
-                        <input
-                          type="text"
-                          value={form.department}
-                          onChange={(e) =>
-                            updateForm("department", e.target.value)
-                          }
-                          placeholder="Outbound"
-                          disabled={saving}
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                          Designation
-                        </label>
-                        <input
-                          type="text"
-                          value={form.designation}
-                          onChange={(e) =>
-                            updateForm("designation", e.target.value)
-                          }
-                          placeholder="Associate"
-                          disabled={saving}
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+                        <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Joining Date
                         </label>
                         <input
@@ -848,154 +1041,151 @@ export default function EmployeesPage() {
                             updateForm("joining_date", e.target.value)
                           }
                           disabled={saving}
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
+                          className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200 disabled:bg-slate-100"
                         />
                       </div>
                     </div>
                   )}
 
-                  {/* ─── BULK PASTE ─── */}
-                  {addMode === "bulk" && !editingEmployee && (
-                    <div className="space-y-4">
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                        <p className="font-semibold text-slate-700">
-                          How to use
-                        </p>
-                        <ol className="mt-1 list-inside list-decimal space-y-0.5">
-                          <li>Copy rows from Excel (with or without header).</li>
-                          <li>Paste into the box below.</li>
-                          <li>Review the preview and click Save.</li>
-                        </ol>
-                        <p className="mt-2 font-medium text-slate-700">
-                          Column order (required):
-                        </p>
-                        <code className="mt-1 block overflow-x-auto rounded bg-white px-2 py-1.5 font-mono text-[11px] text-slate-800">
-                          Employee ID | Barcode | Full Name | Department |
-                          Designation | Type | Gender | Joining Date
-                        </code>
-                        <p className="mt-1.5 text-[11px] text-slate-500">
-                          Gender accepts: <span className="font-medium">Male</span> /{" "}
-                          <span className="font-medium">Female</span> /{" "}
-                          <span className="font-medium">Other</span> (or M / F).
-                          Type: BLUE_COLLAR / ASSOCIATE.
-                        </p>
-                      </div>
+                  {/* BULK ADD / BULK EDIT */}
+                  {(modalMode === "bulk_add" || modalMode === "bulk_edit") &&
+                    !editingEmployee && (
+                      <div className="space-y-3">
+                        {!isAdmin && (
+                          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                            You are not an admin. You can preview paste data,
+                            but only admins can save bulk changes.
+                          </div>
+                        )}
+                        <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 text-[11px] text-slate-600">
+                          <p className="font-semibold text-slate-700">
+                            {modalMode === "bulk_edit"
+                              ? "Bulk Edit — match by Employee ID"
+                              : "Bulk Add — create new"}
+                          </p>
+                          <code className="mt-1 block overflow-x-auto rounded bg-white px-2 py-1 font-mono text-[10px] text-slate-800">
+                            Emp ID | Barcode | Full Name | Department |
+                            Designation | Type | Gender | Vendor | Customer
+                            Account | Joining Date
+                          </code>
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Type: Skilled / Semi-Skilled / Unskilled. Gender:
+                            Male / Female / Other (or M / F).
+                            {modalMode === "bulk_edit" &&
+                              " Unknown Emp IDs are marked invalid."}
+                          </p>
+                        </div>
 
-                      <div>
-                        <label className="mb-1.5 block text-xs font-semibold text-slate-600">
-                          Paste Excel data *
-                        </label>
                         <textarea
                           value={bulkText}
-                          onChange={(e) =>
-                            handleBulkTextChange(e.target.value)
-                          }
-                          placeholder={`EMP001\t1234567890\tJohn Doe\tOutbound\tPicker\tBLUE_COLLAR\tMale\t2024-01-15\nEMP002\t0987654321\tJane Smith\tInbound\tAssociate\tASSOCIATE\tFemale\t15/01/2024`}
+                          onChange={(e) => handleBulkTextChange(e.target.value)}
+                          placeholder={`EMP001\t1234567890\tJohn Doe\tOutbound\tPicker\tSkilled\tMale\tVendorA\tACC001\t2024-01-15`}
                           disabled={saving}
-                          rows={8}
-                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 font-mono text-xs outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200 disabled:bg-slate-100"
+                          rows={7}
+                          className="w-full rounded-md border border-slate-300 px-2.5 py-2 font-mono text-[11px] outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-200 disabled:bg-slate-100"
                         />
-                      </div>
 
-                      {bulkRows.length > 0 && (
-                        <div>
-                          <div className="mb-2 flex items-center justify-between">
-                            <p className="text-xs font-semibold text-slate-600">
-                              Preview ({bulkRows.length} rows)
-                            </p>
-                            <div className="flex gap-3 text-xs">
-                              <span className="text-green-600">
-                                {validBulkCount} valid
-                              </span>
-                              {invalidBulkCount > 0 && (
-                                <span className="text-red-600">
-                                  {invalidBulkCount} invalid
+                        {bulkRows.length > 0 && (
+                          <div>
+                            <div className="mb-1.5 flex items-center justify-between">
+                              <p className="text-[10px] font-semibold text-slate-600">
+                                Preview ({bulkRows.length} rows)
+                              </p>
+                              <div className="flex gap-2 text-[10px]">
+                                <span className="text-green-600">
+                                  {validBulkCount} valid
                                 </span>
-                              )}
+                                {invalidBulkCount > 0 && (
+                                  <span className="text-red-600">
+                                    {invalidBulkCount} invalid
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="max-h-48 overflow-auto rounded-md border border-slate-200">
+                              <table className="w-full min-w-[800px] border-collapse text-left text-[10px]">
+                                <thead className="sticky top-0 bg-slate-100">
+                                  <tr>
+                                    {[
+                                      "#",
+                                      "Emp ID",
+                                      "Name",
+                                      "Type",
+                                      "Vendor",
+                                      "Account",
+                                      "Status",
+                                    ].map((h) => (
+                                      <th
+                                        key={h}
+                                        className="px-1.5 py-1 font-semibold text-slate-500"
+                                      >
+                                        {h}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {bulkRows.map((row, idx) => (
+                                    <tr
+                                      key={idx}
+                                      className={
+                                        row.error
+                                          ? "bg-red-50"
+                                          : "hover:bg-slate-50"
+                                      }
+                                    >
+                                      <td className="px-1.5 py-1 text-slate-400">
+                                        {idx + 1}
+                                      </td>
+                                      <td className="px-1.5 py-1 font-medium">
+                                        {row.employee_code || "—"}
+                                      </td>
+                                      <td className="px-1.5 py-1">
+                                        {row.full_name || "—"}
+                                      </td>
+                                      <td className="px-1.5 py-1">
+                                        {skillLabel(row.employment_type)}
+                                      </td>
+                                      <td className="px-1.5 py-1">
+                                        {row.vendor || "—"}
+                                      </td>
+                                      <td className="px-1.5 py-1">
+                                        {row.customer_account || "—"}
+                                      </td>
+                                      <td className="px-1.5 py-1">
+                                        {row.error ? (
+                                          <span className="text-red-600">
+                                            {row.error}
+                                          </span>
+                                        ) : (
+                                          <span className="text-green-600">
+                                            OK
+                                          </span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
                             </div>
                           </div>
-                          <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
-                            <table className="w-full min-w-[800px] border-collapse text-left text-xs">
-                              <thead className="sticky top-0 bg-slate-100">
-                                <tr>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">#</th>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">Emp ID</th>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">Barcode</th>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">Name</th>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">Gender</th>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">Dept</th>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">Type</th>
-                                  <th className="px-2 py-1.5 font-semibold text-slate-500">Status</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {bulkRows.map((row, idx) => (
-                                  <tr
-                                    key={idx}
-                                    className={
-                                      row.error
-                                        ? "bg-red-50"
-                                        : "hover:bg-slate-50"
-                                    }
-                                  >
-                                    <td className="px-2 py-1.5 text-slate-400">
-                                      {idx + 1}
-                                    </td>
-                                    <td className="px-2 py-1.5 font-medium">
-                                      {row.employee_code || "—"}
-                                    </td>
-                                    <td className="px-2 py-1.5 font-mono">
-                                      {row.barcode || "—"}
-                                    </td>
-                                    <td className="px-2 py-1.5">
-                                      {row.full_name || "—"}
-                                    </td>
-                                    <td className="px-2 py-1.5">
-                                      {row.gender || "—"}
-                                    </td>
-                                    <td className="px-2 py-1.5">
-                                      {row.department || "—"}
-                                    </td>
-                                    <td className="px-2 py-1.5">
-                                      {row.employment_type === "ASSOCIATE"
-                                        ? "Associate"
-                                        : "Blue Collar"}
-                                    </td>
-                                    <td className="px-2 py-1.5">
-                                      {row.error ? (
-                                        <span className="text-red-600">
-                                          {row.error}
-                                        </span>
-                                      ) : (
-                                        <span className="text-green-600">
-                                          OK
-                                        </span>
-                                      )}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                        )}
+                      </div>
+                    )}
 
                   {error && (
-                    <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700">
+                    <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-700">
                       {error}
                     </div>
                   )}
                 </div>
 
-                {/* FOOTER */}
-                <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">
+                <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-2.5">
                   <button
                     type="button"
                     disabled={saving}
                     onClick={closeModal}
-                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
                   >
                     Cancel
                   </button>
@@ -1003,22 +1193,76 @@ export default function EmployeesPage() {
                     type="submit"
                     disabled={
                       saving ||
-                      (addMode === "bulk" &&
+                      ((modalMode === "bulk_add" || modalMode === "bulk_edit") &&
                         !editingEmployee &&
                         validBulkCount === 0)
                     }
-                    className="rounded-lg bg-slate-800 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-md bg-slate-800 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {saving
                       ? "Saving..."
                       : editingEmployee
                         ? "Update Employee"
-                        : addMode === "bulk"
-                          ? `Save ${validBulkCount || ""} Employee${validBulkCount === 1 ? "" : "s"}`
-                          : "Save Employee"}
+                        : modalMode === "bulk_edit"
+                          ? `Update ${validBulkCount || ""} Employee${validBulkCount === 1 ? "" : "s"}`
+                          : modalMode === "bulk_add"
+                            ? `Save ${validBulkCount || ""} Employee${validBulkCount === 1 ? "" : "s"}`
+                            : "Save Employee"}
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* CONFIRM */}
+        {showConfirm && pendingBulkAction && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/50 p-4">
+            <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl">
+              <h3 className="text-sm font-semibold text-slate-800">
+                Confirm bulk {pendingBulkAction === "edit" ? "update" : "add"}
+              </h3>
+              <p className="mt-2 text-xs text-slate-600">
+                You are about to{" "}
+                <strong>
+                  {pendingBulkAction === "edit" ? "update" : "create"}{" "}
+                  {validBulkCount} employee
+                  {validBulkCount === 1 ? "" : "s"}
+                </strong>
+                {invalidBulkCount > 0 && (
+                  <>
+                    {" "}
+                    ({invalidBulkCount} invalid row
+                    {invalidBulkCount === 1 ? "" : "s"} skipped)
+                  </>
+                )}
+                .
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => {
+                    setShowConfirm(false);
+                    setPendingBulkAction(null);
+                  }}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={executeBulk}
+                  className="rounded-md bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {saving
+                    ? "Processing..."
+                    : pendingBulkAction === "edit"
+                      ? "Yes, update"
+                      : "Yes, create"}
+                </button>
+              </div>
             </div>
           </div>
         )}
