@@ -3,6 +3,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase";
 
+/* ───────────────── Types ───────────────── */
+
 type AttendanceRow = {
   id: string;
   employee_id: string;
@@ -28,6 +30,7 @@ type ShiftRow = {
   name: string;
   start_time: string;
   end_time: string;
+  is_overnight?: boolean | null;
 };
 
 type EmployeeRow = {
@@ -52,7 +55,12 @@ type DetailRow = {
   status: string;
 };
 
-type DayMark = "P" | "A" | "H" | "L" | "O" | "-"; // Present, Absent, Half, Leave, Off, none
+type DayMark = "P" | "A" | "H" | "L" | "O" | "-";
+
+const OT_GRACE_MINUTES = 30;
+const STANDARD_HOURS = 8;
+
+/* ───────────────── IST / period helpers ───────────────── */
 
 function todayIST(): string {
   const p = new Intl.DateTimeFormat("en-CA", {
@@ -65,9 +73,68 @@ function todayIST(): string {
   return `${g("year")}-${g("month")}-${g("day")}`;
 }
 
+/** Payroll cycle: 26 previous month → 25 current (or 26 current → 25 next if day >= 26) */
+function payrollPeriodFromRef(refYmd: string): { from: string; to: string; label: string } {
+  const [y, m, d] = refYmd.split("-").map(Number);
+
+  let fromY = y;
+  let fromM = m;
+  let toY = y;
+  let toM = m;
+
+  if (d >= 26) {
+    // 26 this month → 25 next month
+    fromY = y;
+    fromM = m;
+    toM = m + 1;
+    toY = y;
+    if (toM > 12) {
+      toM = 1;
+      toY = y + 1;
+    }
+  } else {
+    // 26 previous month → 25 this month
+    toY = y;
+    toM = m;
+    fromM = m - 1;
+    fromY = y;
+    if (fromM < 1) {
+      fromM = 12;
+      fromY = y - 1;
+    }
+  }
+
+  const from = `${fromY}-${String(fromM).padStart(2, "0")}-26`;
+  const to = `${toY}-${String(toM).padStart(2, "0")}-25`;
+  return { from, to, label: `${from} → ${to}` };
+}
+
+/** Days from 26→25 for a cycle identified by the month of the 25th (YYYY-MM of end month) */
+function payrollDaysForEndMonth(endMonth: string): string[] {
+  // endMonth = YYYY-MM of the month that contains day 25
+  const [ey, em] = endMonth.split("-").map(Number);
+  let fromY = ey;
+  let fromM = em - 1;
+  if (fromM < 1) {
+    fromM = 12;
+    fromY = ey - 1;
+  }
+  const from = `${fromY}-${String(fromM).padStart(2, "0")}-26`;
+  const to = `${ey}-${String(em).padStart(2, "0")}-25`;
+
+  const days: string[] = [];
+  let cur = from;
+  while (cur <= to) {
+    days.push(cur);
+    const dt = new Date(`${cur}T12:00:00+05:30`);
+    dt.setDate(dt.getDate() + 1);
+    cur = dt.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  }
+  return days;
+}
+
 function formatTimeIST(iso: string | null) {
   if (!iso) return "";
-
   return new Intl.DateTimeFormat("en-IN", {
     timeZone: "Asia/Kolkata",
     hour: "2-digit",
@@ -79,7 +146,6 @@ function formatTimeIST(iso: string | null) {
 
 function formatDateDisplay(dateStr: string) {
   const date = new Date(`${dateStr}T00:00:00+05:30`);
-
   return new Intl.DateTimeFormat("en-IN", {
     timeZone: "Asia/Kolkata",
     day: "2-digit",
@@ -92,30 +158,63 @@ function hoursBetween(checkIn: string | null, checkOut: string | null): number {
   if (!checkIn || !checkOut) return 0;
   const ms = new Date(checkOut).getTime() - new Date(checkIn).getTime();
   if (ms <= 0) return 0;
-  return Math.round((ms / 3600000) * 10) / 10; // 1 decimal
+  return Math.round((ms / 3_600_000) * 10) / 10;
 }
 
-function otHours(worked: number, standard = 8): number {
-  if (worked <= standard) return 0;
-  return Math.round((worked - standard) * 10) / 10;
+/** OT: checkout required; only if > 30 min after shift end; value = full minutes after end (in hours, 1 decimal) */
+function calcOtHours(
+  checkOutIso: string | null,
+  shiftEndHHMM: string | null | undefined,
+  attendanceDate: string,
+  isOvernight = false
+): number {
+  if (!checkOutIso || !shiftEndHHMM) return 0;
+
+  const endTime = shiftEndHHMM.slice(0, 5);
+  let endDate = attendanceDate;
+  if (isOvernight) {
+    const d = new Date(`${attendanceDate}T12:00:00+05:30`);
+    d.setDate(d.getDate() + 1);
+    endDate = d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  }
+
+  const shiftEnd = new Date(`${endDate}T${endTime}:00+05:30`);
+  const checkOut = new Date(checkOutIso);
+  const diffMin = Math.floor((checkOut.getTime() - shiftEnd.getTime()) / 60_000);
+
+  if (diffMin <= OT_GRACE_MINUTES) return 0;
+  return Math.round((diffMin / 60) * 10) / 10;
 }
 
-function statusLabel(
-  checkIn: string | null,
-  checkOut: string | null,
-  rosterStatus?: string
-): string {
-  if (rosterStatus === "LEAVE") return "Leave";
+function resolveStatus(opts: {
+  attStatus: string | null | undefined;
+  checkIn: string | null;
+  checkOut: string | null;
+  rosterStatus?: string;
+}): string {
+  const { attStatus, checkIn, checkOut, rosterStatus } = opts;
+
+  if (attStatus === "ABSENT") return "Absent";
+  if (attStatus === "HALF_DAY") return "Half Day";
+  if (attStatus === "LEAVE" || rosterStatus === "LEAVE") return "Leave";
   if (rosterStatus === "OFF") return "Week Off";
-  if (!checkIn) return "Absent";
-  if (!checkOut) return "Present";
+
+  if (!checkIn) {
+    if (rosterStatus === "SHIFT") return "Absent";
+    return "Absent";
+  }
+
+  if (!checkOut) return "Present"; // still working / open
+
   const h = hoursBetween(checkIn, checkOut);
-  if (h < 4) return "Absent";
+  if (h > 0 && h < 4) return "Half Day";
   return "Present";
 }
 
-function downloadTextFile(filename: string, content: string, mime = "text/csv;charset=utf-8;") {
-  const blob = new Blob(["\uFEFF" + content], { type: mime });
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob(["\uFEFF" + content], {
+    type: "text/csv;charset=utf-8;",
+  });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -126,37 +225,35 @@ function downloadTextFile(filename: string, content: string, mime = "text/csv;ch
   URL.revokeObjectURL(url);
 }
 
+/* ───────────────── Page ───────────────── */
+
 export default function ReportsPage() {
   const supabase = createClient();
+  const today = todayIST();
+  const defaultPeriod = payrollPeriodFromRef(today);
 
   const [tab, setTab] = useState<"DETAIL" | "CALENDAR">("DETAIL");
 
-  // Detail filters
-  const [fromDate, setFromDate] = useState(() => {
-    const d = new Date();
-    d.setDate(1);
-    return d.toISOString().slice(0, 10);
-  });
-  const [toDate, setToDate] = useState(todayIST());
+  const [fromDate, setFromDate] = useState(defaultPeriod.from);
+  const [toDate, setToDate] = useState(defaultPeriod.to);
 
-  // Calendar month
-  const [calMonth, setCalMonth] = useState(() => {
-    const n = new Date();
-    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`;
-  });
+  /** Calendar uses end-month of payroll cycle (month of the 25th) */
+  const [calEndMonth, setCalEndMonth] = useState(() =>
+    defaultPeriod.to.slice(0, 7)
+  );
 
   const [detailRows, setDetailRows] = useState<DetailRow[]>([]);
   const [calendarMatrix, setCalendarMatrix] = useState<
-  {
-    employee_id: string;
-    employee_code: string;
-    full_name: string;
-    department: string;
-    days: Record<string, DayMark>;
-    totalWorkingHours: number;
-    totalOTHours: number;
-  }[]
->([]);
+    {
+      employee_id: string;
+      employee_code: string;
+      full_name: string;
+      department: string;
+      days: Record<string, DayMark>;
+      totalWorkingHours: number;
+      totalOTHours: number;
+    }[]
+  >([]);
   const [calDays, setCalDays] = useState<string[]>([]);
 
   const [search, setSearch] = useState("");
@@ -164,7 +261,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // ─── Load DETAIL report ────────────────────────────────────────────────────
+  /* ── DETAIL ── */
   const loadDetail = useCallback(async () => {
     if (!fromDate || !toDate || fromDate > toDate) {
       setError("Invalid date range.");
@@ -174,7 +271,7 @@ export default function ReportsPage() {
     setError("");
 
     try {
-      const [attRes, rosterRes, shiftRes] = await Promise.all([
+      const [attRes, rosterRes, shiftRes, empRes] = await Promise.all([
         supabase
           .from("attendance")
           .select(
@@ -187,7 +284,13 @@ export default function ReportsPage() {
           .select("employee_id, roster_date, roster_status, shift_id")
           .gte("roster_date", fromDate)
           .lte("roster_date", toDate),
-        supabase.from("shifts").select("id, code, name, start_time, end_time"),
+        supabase
+          .from("shifts")
+          .select("id, code, name, start_time, end_time, is_overnight"),
+        supabase
+          .from("employees")
+          .select("id, employee_code, full_name, department, is_active")
+          .eq("is_active", true),
       ]);
 
       if (attRes.error) throw attRes.error;
@@ -195,33 +298,48 @@ export default function ReportsPage() {
       const attendance = (attRes.data || []) as AttendanceRow[];
       const rosters = (rosterRes.data || []) as RosterRow[];
       const shifts = (shiftRes.data || []) as ShiftRow[];
+      const employees = (empRes.data || []) as EmployeeRow[];
 
+      const empMap = new Map(employees.map((e) => [e.id, e]));
       const shiftMap = new Map(shifts.map((s) => [s.id, s]));
       const rosterMap = new Map(
         rosters.map((r) => [`${r.employee_id}_${r.roster_date}`, r])
       );
+      const attKeySet = new Set(
+        attendance.map((a) => `${a.employee_id}_${a.attendance_date}`)
+      );
 
-      const built: DetailRow[] = attendance.map((a) => {
+      const built: DetailRow[] = [];
+
+      // From attendance rows
+      for (const a of attendance) {
         const key = `${a.employee_id}_${a.attendance_date}`;
         const roster = rosterMap.get(key);
-        const shift = roster?.shift_id
-          ? shiftMap.get(roster.shift_id)
-          : null;
-        const worked = hoursBetween(a.check_in, a.check_out);
-        const status = statusLabel(
-          a.check_in,
-          a.check_out,
-          roster?.roster_status
-        );
+        const shift = roster?.shift_id ? shiftMap.get(roster.shift_id) : null;
+        const emp = empMap.get(a.employee_id);
 
-        return {
+        const worked = hoursBetween(a.check_in, a.check_out);
+        const ot = calcOtHours(
+          a.check_out,
+          shift?.end_time,
+          a.attendance_date,
+          !!shift?.is_overnight
+        );
+        const status = resolveStatus({
+          attStatus: a.status,
+          checkIn: a.check_in,
+          checkOut: a.check_out,
+          rosterStatus: roster?.roster_status,
+        });
+
+        built.push({
           date: a.attendance_date,
           employee_id: a.employee_id,
-          employee_code: a.employee_code || "",
-          full_name: a.full_name || "",
-          department: a.department || "",
+          employee_code: a.employee_code || emp?.employee_code || "",
+          full_name: a.full_name || emp?.full_name || "",
+          department: a.department || emp?.department || "",
           shift: shift
-            ? `${shift.code}`
+            ? shift.code
             : roster?.roster_status === "OFF"
               ? "OFF"
               : roster?.roster_status === "LEAVE"
@@ -230,10 +348,44 @@ export default function ReportsPage() {
           in_time: formatTimeIST(a.check_in),
           out_time: formatTimeIST(a.check_out),
           working_hours: worked ? String(worked) : "",
-          ot_hours: worked ? String(otHours(worked)) : "",
+          ot_hours: ot ? String(ot) : "",
           status,
-        };
-      });
+        });
+      }
+
+      // Roster SHIFT / OFF / LEAVE with no attendance row
+      for (const r of rosters) {
+        const key = `${r.employee_id}_${r.roster_date}`;
+        if (attKeySet.has(key)) continue;
+
+        const emp = empMap.get(r.employee_id);
+        if (!emp) continue;
+        const shift = r.shift_id ? shiftMap.get(r.shift_id) : null;
+
+        let status = "Absent";
+        let shiftLabel = shift?.code || "";
+        if (r.roster_status === "OFF") {
+          status = "Week Off";
+          shiftLabel = "OFF";
+        } else if (r.roster_status === "LEAVE") {
+          status = "Leave";
+          shiftLabel = "LEAVE";
+        }
+
+        built.push({
+          date: r.roster_date,
+          employee_id: r.employee_id,
+          employee_code: emp.employee_code || "",
+          full_name: emp.full_name || "",
+          department: emp.department || "",
+          shift: shiftLabel,
+          in_time: "",
+          out_time: "",
+          working_hours: "",
+          ot_hours: "",
+          status,
+        });
+      }
 
       built.sort((a, b) => {
         if (a.date !== b.date) return a.date < b.date ? 1 : -1;
@@ -243,29 +395,17 @@ export default function ReportsPage() {
       setDetailRows(built);
     } catch (err: unknown) {
       console.error(err);
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load detail report."
-      );
+      setError(err instanceof Error ? err.message : "Failed to load detail.");
     } finally {
       setLoading(false);
     }
   }, [fromDate, toDate, supabase]);
 
-  // ─── Load CALENDAR (monthly P/A/H/L) ───────────────────────────────────────
+  /* ── CALENDAR (26→25) ── */
   const loadCalendar = useCallback(async () => {
-    const [y, m] = calMonth.split("-").map(Number);
-    const daysInMonth = new Date(y, m, 0).getDate();
-    const days: string[] = [];
-
-    for (let d = 1; d <= daysInMonth; d++) {
-      days.push(
-        `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`
-      );
-    }
-
+    const days = payrollDaysForEndMonth(calEndMonth);
     setCalDays(days);
+    if (!days.length) return;
 
     const from = days[0];
     const to = days[days.length - 1];
@@ -274,7 +414,7 @@ export default function ReportsPage() {
     setError("");
 
     try {
-      const [empRes, attRes, rosterRes] = await Promise.all([
+      const [empRes, attRes, rosterRes, shiftRes] = await Promise.all([
         supabase
           .from("employees")
           .select("id, employee_code, full_name, department, is_active")
@@ -282,14 +422,19 @@ export default function ReportsPage() {
           .order("full_name"),
         supabase
           .from("attendance")
-          .select("employee_id, attendance_date, check_in, check_out")
+          .select(
+            "employee_id, attendance_date, check_in, check_out, status"
+          )
           .gte("attendance_date", from)
           .lte("attendance_date", to),
         supabase
           .from("rosters")
-          .select("employee_id, roster_date, roster_status")
+          .select("employee_id, roster_date, roster_status, shift_id")
           .gte("roster_date", from)
           .lte("roster_date", to),
+        supabase
+          .from("shifts")
+          .select("id, code, name, start_time, end_time, is_overnight"),
       ]);
 
       if (empRes.error) throw empRes.error;
@@ -297,76 +442,89 @@ export default function ReportsPage() {
       const employees = (empRes.data || []) as EmployeeRow[];
       const attendance = (attRes.data || []) as AttendanceRow[];
       const rosters = (rosterRes.data || []) as RosterRow[];
+      const shifts = (shiftRes.data || []) as ShiftRow[];
+      const shiftMap = new Map(shifts.map((s) => [s.id, s]));
 
-      const attMap = new Map<string, { check_in: string | null; check_out: string | null }>();
+      const attMap = new Map<
+        string,
+        {
+          check_in: string | null;
+          check_out: string | null;
+          status: string | null;
+        }
+      >();
       for (const a of attendance) {
         attMap.set(`${a.employee_id}_${a.attendance_date}`, {
           check_in: a.check_in,
           check_out: a.check_out,
+          status: a.status,
         });
       }
 
-      const rosterMap = new Map<string, string>();
+      const rosterMap = new Map<string, RosterRow>();
       for (const r of rosters) {
-        rosterMap.set(`${r.employee_id}_${r.roster_date}`, r.roster_status);
+        rosterMap.set(`${r.employee_id}_${r.roster_date}`, r);
       }
 
       const matrix = employees.map((emp) => {
         const dayMarks: Record<string, DayMark> = {};
-        const today = todayIST();
+        let totalWorkingHours = 0;
+        let totalOTHours = 0;
 
         for (const day of days) {
           const key = `${emp.id}_${day}`;
-          const rosterStatus = rosterMap.get(key);
+          const roster = rosterMap.get(key);
+          const rosterStatus = roster?.roster_status;
           const att = attMap.get(key);
+          const shift = roster?.shift_id
+            ? shiftMap.get(roster.shift_id)
+            : null;
 
           if (day > today) {
             dayMarks[day] = "-";
             continue;
           }
 
-          if (rosterStatus === "LEAVE") {
-  dayMarks[day] = "L";
-  continue;
-}
-
-if (rosterStatus === "OFF") {
-  dayMarks[day] = "O";
-  continue;
-}
-
-if (att?.check_in) {
-  const worked = hoursBetween(att.check_in, att.check_out);
-
-  if (!att.check_out) {
-    dayMarks[day] = "P";
-  } else if (worked >= 4) {
-    dayMarks[day] = "P";
-  } else {
-    dayMarks[day] = "A";
-  }
-
-  continue;
-}
-
-if (rosterStatus) {
-  dayMarks[day] = "A";
-  continue;
-}
-
-dayMarks[day] = "-";
-        }
-        let totalWorkingHours = 0;
-        let totalOTHours = 0;
-
-        for (const day of days) {
-          const att = attMap.get(`${emp.id}_${day}`);
-
-          if (att?.check_in && att?.check_out) {
-            const worked = hoursBetween(att.check_in, att.check_out);
-            totalWorkingHours += worked;
-            totalOTHours += otHours(worked);
+          if (att?.status === "ABSENT") {
+            dayMarks[day] = "A";
+            continue;
           }
+          if (att?.status === "HALF_DAY") {
+            dayMarks[day] = "H";
+            continue;
+          }
+          if (rosterStatus === "LEAVE" || att?.status === "LEAVE") {
+            dayMarks[day] = "L";
+            continue;
+          }
+          if (rosterStatus === "OFF") {
+            dayMarks[day] = "O";
+            continue;
+          }
+
+          if (att?.check_in) {
+            const worked = hoursBetween(att.check_in, att.check_out);
+            if (att.check_out) {
+              totalWorkingHours += worked;
+              totalOTHours += calcOtHours(
+                att.check_out,
+                shift?.end_time,
+                day,
+                !!shift?.is_overnight
+              );
+              dayMarks[day] = worked > 0 && worked < 4 ? "H" : "P";
+            } else {
+              dayMarks[day] = "P";
+            }
+            continue;
+          }
+
+          if (rosterStatus === "SHIFT") {
+            dayMarks[day] = "A";
+            continue;
+          }
+
+          dayMarks[day] = "-";
         }
 
         return {
@@ -383,26 +541,25 @@ dayMarks[day] = "-";
       setCalendarMatrix(matrix);
     } catch (err: unknown) {
       console.error(err);
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load calendar."
-      );
+      setError(err instanceof Error ? err.message : "Failed to load calendar.");
     } finally {
       setLoading(false);
     }
-  }, [calMonth, supabase]);
+  }, [calEndMonth, supabase, today]);
 
   function refreshReport() {
-    if (tab === "DETAIL") {
-      void loadDetail();
-      return;
-    }
-
-    void loadCalendar();
+    if (tab === "DETAIL") void loadDetail();
+    else void loadCalendar();
   }
 
-  // ─── Filters ───────────────────────────────────────────────────────────────
+  function applyCurrentPayrollCycle() {
+    const p = payrollPeriodFromRef(todayIST());
+    setFromDate(p.from);
+    setToDate(p.to);
+    setCalEndMonth(p.to.slice(0, 7));
+  }
+
+  /* ── Filters ── */
   const departments = useMemo(() => {
     const set = new Set<string>();
     const source =
@@ -439,7 +596,7 @@ dayMarks[day] = "-";
     });
   }, [calendarMatrix, search, department]);
 
-  // ─── Downloads ─────────────────────────────────────────────────────────────
+  /* ── CSV ── */
   function downloadDetailCSV() {
     if (!filteredDetail.length) {
       setError("No rows to download.");
@@ -482,7 +639,7 @@ dayMarks[day] = "-";
       setError("No calendar data to download.");
       return;
     }
-    const dayHeaders = calDays.map((d) => String(Number(d.slice(8))));
+    const dayHeaders = calDays.map((d) => d.slice(8));
     const headers = [
       "Employee ID",
       "Employee Name",
@@ -493,8 +650,9 @@ dayMarks[day] = "-";
       "H",
       "L",
       "O",
+      "WH",
+      "OT",
     ];
-
     const lines = filteredCalendar.map((r) => {
       const marks = calDays.map((d) => r.days[d] || "-");
       const counts = { P: 0, A: 0, H: 0, L: 0, O: 0 };
@@ -511,11 +669,12 @@ dayMarks[day] = "-";
         counts.H,
         counts.L,
         counts.O,
+        r.totalWorkingHours,
+        r.totalOTHours,
       ].join(",");
     });
-
     downloadTextFile(
-      `attendance-calendar_${calMonth}.csv`,
+      `attendance-calendar_${calDays[0]}_to_${calDays[calDays.length - 1]}.csv`,
       [headers.join(","), ...lines].join("\n")
     );
   }
@@ -537,6 +696,13 @@ dayMarks[day] = "-";
     }
   }
 
+  const cycleLabel =
+    tab === "DETAIL"
+      ? `${fromDate} → ${toDate}`
+      : calDays.length
+        ? `${calDays[0]} → ${calDays[calDays.length - 1]}`
+        : "";
+
   return (
     <main className="min-h-screen bg-slate-100 px-4 py-6 md:px-6">
       <div className="mx-auto max-w-[1600px]">
@@ -546,7 +712,8 @@ dayMarks[day] = "-";
               Attendance Reports
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              Detail register and monthly P / A / H / L calendar
+              Cycle 26→25 · OT only if checkout &amp; &gt;30 min after shift end
+              {cycleLabel ? ` · ${cycleLabel}` : ""}
             </p>
           </div>
           <a
@@ -557,8 +724,7 @@ dayMarks[day] = "-";
           </a>
         </div>
 
-        {/* Tabs */}
-        <div className="mb-4 flex gap-1 rounded-lg border border-slate-200 bg-white p-1 w-fit">
+        <div className="mb-4 flex gap-1 w-fit rounded-lg border border-slate-200 bg-white p-1">
           <button
             type="button"
             onClick={() => {
@@ -585,11 +751,10 @@ dayMarks[day] = "-";
                 : "text-slate-600 hover:bg-slate-50"
             }`}
           >
-            Monthly Calendar (P/A/H/L)
+            Monthly Calendar (26→25)
           </button>
         </div>
 
-        {/* Filters */}
         <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
           <div className="flex flex-wrap items-end gap-2">
             {tab === "DETAIL" ? (
@@ -601,10 +766,7 @@ dayMarks[day] = "-";
                   <input
                     type="date"
                     value={fromDate}
-                    onChange={(e) => {
-                      setFromDate(e.target.value);
-                      queueMicrotask(() => void loadDetail());
-                    }}
+                    onChange={(e) => setFromDate(e.target.value)}
                     className="rounded border border-slate-300 px-2 py-1 text-xs"
                   />
                 </div>
@@ -615,10 +777,7 @@ dayMarks[day] = "-";
                   <input
                     type="date"
                     value={toDate}
-                    onChange={(e) => {
-                      setToDate(e.target.value);
-                      queueMicrotask(() => void loadDetail());
-                    }}
+                    onChange={(e) => setToDate(e.target.value)}
                     className="rounded border border-slate-300 px-2 py-1 text-xs"
                   />
                 </div>
@@ -626,19 +785,24 @@ dayMarks[day] = "-";
             ) : (
               <div>
                 <label className="mb-0.5 block text-[10px] font-semibold text-slate-500">
-                  Month
+                  Cycle end month (contains 25th)
                 </label>
                 <input
                   type="month"
-                  value={calMonth}
-                  onChange={(e) => {
-                    setCalMonth(e.target.value);
-                    queueMicrotask(() => void loadCalendar());
-                  }}
+                  value={calEndMonth}
+                  onChange={(e) => setCalEndMonth(e.target.value)}
                   className="rounded border border-slate-300 px-2 py-1 text-xs"
                 />
               </div>
             )}
+
+            <button
+              type="button"
+              onClick={applyCurrentPayrollCycle}
+              className="rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50"
+            >
+              This cycle (26→25)
+            </button>
 
             <div>
               <label className="mb-0.5 block text-[10px] font-semibold text-slate-500">
@@ -693,23 +857,23 @@ dayMarks[day] = "-";
           {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
         </div>
 
-        {/* ── DETAIL TABLE ───────────────────────────────────────────────── */}
+        {/* DETAIL */}
         {tab === "DETAIL" && (
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-[11px] leading-tight">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-500">
-                    <th className="whitespace-nowrap px-2 py-1.5">Date</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">Employee ID</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">Employee Name</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">Department</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">Shift</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">In Time</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">Out Time</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">Working Hours</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">OT Hours</th>
-                    <th className="whitespace-nowrap px-2 py-1.5">Status</th>
+                    <th className="px-2 py-1.5">Date</th>
+                    <th className="px-2 py-1.5">Employee ID</th>
+                    <th className="px-2 py-1.5">Employee Name</th>
+                    <th className="px-2 py-1.5">Department</th>
+                    <th className="px-2 py-1.5">Shift</th>
+                    <th className="px-2 py-1.5">In Time</th>
+                    <th className="px-2 py-1.5">Out Time</th>
+                    <th className="px-2 py-1.5">Working Hours</th>
+                    <th className="px-2 py-1.5">OT Hours</th>
+                    <th className="px-2 py-1.5">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -722,7 +886,7 @@ dayMarks[day] = "-";
                   ) : filteredDetail.length === 0 ? (
                     <tr>
                       <td colSpan={10} className="px-3 py-10 text-center text-slate-400">
-                        No records
+                        No records — click Load
                       </td>
                     </tr>
                   ) : (
@@ -755,7 +919,7 @@ dayMarks[day] = "-";
                         <td className="whitespace-nowrap px-2 py-1 text-slate-700">
                           {r.working_hours || "—"}
                         </td>
-                        <td className="whitespace-nowrap px-2 py-1 text-slate-700">
+                        <td className="whitespace-nowrap px-2 py-1 text-violet-700">
                           {r.ot_hours || "—"}
                         </td>
                         <td className="whitespace-nowrap px-2 py-1">
@@ -769,7 +933,9 @@ dayMarks[day] = "-";
                                     ? "bg-amber-50 text-amber-700"
                                     : r.status === "Leave"
                                       ? "bg-blue-50 text-blue-700"
-                                      : "bg-slate-50 text-slate-500"
+                                      : r.status === "Week Off"
+                                        ? "bg-slate-100 text-slate-500"
+                                        : "bg-slate-50 text-slate-500"
                             }`}
                           >
                             {r.status}
@@ -784,7 +950,7 @@ dayMarks[day] = "-";
           </div>
         )}
 
-        {/* ── CALENDAR MATRIX ────────────────────────────────────────────── */}
+        {/* CALENDAR */}
         {tab === "CALENDAR" && (
           <>
             <div className="mb-2 flex flex-wrap gap-3 text-[10px] text-slate-600">
@@ -835,6 +1001,7 @@ dayMarks[day] = "-";
                         <th
                           key={d}
                           className="min-w-[22px] px-0.5 py-1.5 text-center font-semibold text-slate-400"
+                          title={d}
                         >
                           {Number(d.slice(8))}
                         </th>
@@ -851,17 +1018,15 @@ dayMarks[day] = "-";
                       <th className="px-1 py-1.5 text-center font-semibold text-blue-700">
                         L
                       </th>
-                      <th className="px-1 py-1.5 text-center font-semibold text-slate-700">
-  O
-</th>
-
-<th className="px-1 py-1.5 text-center font-semibold text-indigo-700">
-  WH
-</th>
-
-<th className="px-1 py-1.5 text-center font-semibold text-purple-700">
-  OT
-</th>
+                      <th className="px-1 py-1.5 text-center font-semibold text-slate-600">
+                        O
+                      </th>
+                      <th className="px-1 py-1.5 text-center font-semibold text-indigo-700">
+                        WH
+                      </th>
+                      <th className="px-1 py-1.5 text-center font-semibold text-purple-700">
+                        OT
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -877,21 +1042,22 @@ dayMarks[day] = "-";
                     ) : filteredCalendar.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={calDays.length + 6}
+                          colSpan={calDays.length + 9}
                           className="px-3 py-10 text-center text-slate-400"
                         >
-                          No employees
+                          No employees — click Load
                         </td>
                       </tr>
                     ) : (
                       filteredCalendar.map((r) => {
-                        const counts = { P: 0, A: 0, H: 0, L: 0 };
+                        const counts = { P: 0, A: 0, H: 0, L: 0, O: 0 };
                         for (const d of calDays) {
                           const m = r.days[d];
                           if (m === "P") counts.P++;
                           if (m === "A") counts.A++;
                           if (m === "H") counts.H++;
                           if (m === "L") counts.L++;
+                          if (m === "O") counts.O++;
                         }
                         return (
                           <tr
@@ -928,18 +1094,14 @@ dayMarks[day] = "-";
                               {counts.L}
                             </td>
                             <td className="px-1 py-0.5 text-center font-semibold text-slate-600">
-  {Object.values(r.days).filter(
-    (m) => m === "O"
-  ).length}
-</td>
-
-<td className="px-1 py-0.5 text-center font-semibold text-indigo-700">
-  {r.totalWorkingHours}
-</td>
-
-<td className="px-1 py-0.5 text-center font-semibold text-purple-700">
-  {r.totalOTHours}
-</td>
+                              {counts.O}
+                            </td>
+                            <td className="px-1 py-0.5 text-center font-semibold text-indigo-700">
+                              {r.totalWorkingHours}
+                            </td>
+                            <td className="px-1 py-0.5 text-center font-semibold text-purple-700">
+                              {r.totalOTHours}
+                            </td>
                           </tr>
                         );
                       })
