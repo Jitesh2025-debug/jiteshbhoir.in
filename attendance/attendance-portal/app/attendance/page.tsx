@@ -43,6 +43,16 @@ function todayIST(): string {
   return `${g("year")}-${g("month")}-${g("day")}`;
 }
 
+function formatDisplayDate(dateStr: string) {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 function formatTimeIST(iso: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString("en-IN", {
@@ -73,20 +83,24 @@ function getMinutesIST(iso: string | null): number | null {
 function isLateWithShift(
   checkIn: string | null,
   shiftStart: string | null | undefined,
-  graceMinutes = 15
+  graceMinutes = 15,
+  busDelayMinutes = 0
 ): boolean {
   if (!checkIn) return false;
 
+  const effectiveGrace = graceMinutes + busDelayMinutes;
+
   if (!shiftStart) {
+    // Fallback company time: 09:15 + bus delay
     const mins = getMinutesIST(checkIn);
-    return mins !== null && mins > 9 * 60 + 15;
+    return mins !== null && mins > 9 * 60 + 15 + busDelayMinutes;
   }
 
   const checkInMins = getMinutesIST(checkIn);
   if (checkInMins === null) return false;
 
   const startMins = timeStringToMinutes(shiftStart);
-  return checkInMins > startMins + graceMinutes;
+  return checkInMins > startMins + effectiveGrace;
 }
 
 function normalizeGender(g: string | null | undefined): string {
@@ -112,6 +126,10 @@ function AttendanceContent() {
 
   const urlFilter = (searchParams.get("filter") as FilterType) || "all";
   const [filter, setFilter] = useState<FilterType>(urlFilter);
+  const [selectedDate, setSelectedDate] = useState(todayIST());
+  const [busDelay, setBusDelay] = useState(0);
+  const [busDelayInput, setBusDelayInput] = useState("0");
+  const [savingDelay, setSavingDelay] = useState(false);
   const [search, setSearch] = useState("");
   const [deptFilter, setDeptFilter] = useState<string | null>(null);
   const [genderFilter, setGenderFilter] = useState<string | null>(null);
@@ -119,20 +137,69 @@ function AttendanceContent() {
   const [absentRows, setAbsentRows] = useState<AbsentRow[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const isToday = selectedDate === todayIST();
+
   useEffect(() => {
     setFilter(urlFilter);
   }, [urlFilter]);
 
-  async function loadData(currentFilter: FilterType) {
+  // Load Bus Delay for selected date
+  async function loadBusDelay(date: string) {
+    const { data } = await supabase
+      .from("daily_settings")
+      .select("bus_delay_minutes")
+      .eq("setting_date", date)
+      .maybeSingle();
+
+    const delay = data?.bus_delay_minutes ?? 0;
+    setBusDelay(delay);
+    setBusDelayInput(String(delay));
+  }
+
+  async function saveBusDelay() {
+    const value = parseInt(busDelayInput, 10);
+    if (isNaN(value) || value < 0) {
+      alert("Please enter a valid number (0 or more)");
+      return;
+    }
+
+    setSavingDelay(true);
+    try {
+      const { error } = await supabase.from("daily_settings").upsert(
+        {
+          setting_date: selectedDate,
+          bus_delay_minutes: value,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "setting_date" }
+      );
+
+      if (error) throw error;
+
+      setBusDelay(value);
+      // Reload data so Late status updates
+      await loadData(filter, selectedDate, value);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to save Bus Delay");
+    } finally {
+      setSavingDelay(false);
+    }
+  }
+
+  async function loadData(
+    currentFilter: FilterType,
+    date: string,
+    delayMinutes: number = busDelay
+  ) {
     setLoading(true);
-    const today = todayIST();
 
     try {
       if (currentFilter === "absent") {
         const { data: roster } = await supabase
           .from("rosters")
           .select("employee_id")
-          .eq("roster_date", today)
+          .eq("roster_date", date)
           .eq("roster_status", "SHIFT");
 
         const rosterIds = (roster || []).map((r) => r.employee_id);
@@ -146,7 +213,7 @@ function AttendanceContent() {
         const { data: att } = await supabase
           .from("attendance")
           .select("employee_id")
-          .eq("attendance_date", today)
+          .eq("attendance_date", date)
           .not("check_in", "is", null);
 
         const presentIds = new Set((att || []).map((a) => a.employee_id));
@@ -175,7 +242,6 @@ function AttendanceContent() {
         );
         setRows([]);
       } else {
-        // 1. Load attendance
         const { data: attData, error: attError } = await supabase
           .from("attendance")
           .select(
@@ -191,7 +257,7 @@ function AttendanceContent() {
             employees ( gender )
           `
           )
-          .eq("attendance_date", today)
+          .eq("attendance_date", date)
           .order("check_in", { ascending: false });
 
         if (attError) throw attError;
@@ -211,7 +277,6 @@ function AttendanceContent() {
           grace_minutes: 15,
         }));
 
-        // 2. Load today's rosters + shifts
         const employeeIds = list.map((r) => r.employee_id);
 
         if (employeeIds.length > 0) {
@@ -228,7 +293,7 @@ function AttendanceContent() {
               )
             `
             )
-            .eq("roster_date", today)
+            .eq("roster_date", date)
             .in("employee_id", employeeIds);
 
           const shiftMap = new Map<
@@ -257,49 +322,17 @@ function AttendanceContent() {
           });
         }
 
-        // 3. Auto Half Day
-        const THREE_HOURS = 3 * 60;
-        const nowMins = (() => {
-          const p = new Date().toLocaleString("en-IN", {
-            timeZone: "Asia/Kolkata",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false,
-          });
-          const [h, m] = p.split(":").map(Number);
-          return h * 60 + m;
-        })();
-
-        for (const row of list) {
-          if (
-            row.check_in &&
-            !row.check_out &&
-            row.shift_end &&
-            row.status !== "HALF_DAY"
-          ) {
-            const endMins = timeStringToMinutes(row.shift_end);
-            if (nowMins > endMins + THREE_HOURS) {
-              await supabase
-                .from("attendance")
-                .update({
-                  status: "HALF_DAY",
-                  updated_at: new Date().toISOString(),
-                })
-                .eq("id", row.id);
-
-              row.status = "HALF_DAY";
-            }
-          }
-        }
-
-        // 4. Apply status filter
+        // Apply filter
         if (currentFilter === "present") {
           list = list.filter((a) => a.check_in);
         } else if (currentFilter === "late") {
-          list = list.filter(
-            (a) =>
-              a.check_in &&
-              isLateWithShift(a.check_in, a.shift_start, a.grace_minutes ?? 15)
+          list = list.filter((a) =>
+            isLateWithShift(
+              a.check_in,
+              a.shift_start,
+              a.grace_minutes ?? 15,
+              delayMinutes
+            )
           );
         } else if (currentFilter === "working") {
           list = list.filter((a) => a.check_in && !a.check_out);
@@ -316,10 +349,14 @@ function AttendanceContent() {
   }
 
   useEffect(() => {
-    loadData(filter);
+    async function init() {
+      await loadBusDelay(selectedDate);
+      await loadData(filter, selectedDate);
+    }
+    init();
     setDeptFilter(null);
     setGenderFilter(null);
-  }, [filter]);
+  }, [filter, selectedDate]);
 
   function changeFilter(newFilter: FilterType) {
     setFilter(newFilter);
@@ -331,18 +368,31 @@ function AttendanceContent() {
     router.push(url);
   }
 
-  // ── Table filtering (search + dept + gender) ────────────────────────────
+  function handleDateChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const value = e.target.value;
+    if (value) {
+      setSelectedDate(value);
+      setSearch("");
+      setDeptFilter(null);
+      setGenderFilter(null);
+    }
+  }
+
+  function goToToday() {
+    setSelectedDate(todayIST());
+    setSearch("");
+    setDeptFilter(null);
+    setGenderFilter(null);
+  }
+
+  // Filtering
   const filteredRows = useMemo(() => {
     let list = rows;
     if (deptFilter) {
-      list = list.filter(
-        (r) => (r.department || "Unassigned") === deptFilter
-      );
+      list = list.filter((r) => (r.department || "Unassigned") === deptFilter);
     }
     if (genderFilter) {
-      list = list.filter(
-        (r) => normalizeGender(r.gender) === genderFilter
-      );
+      list = list.filter((r) => normalizeGender(r.gender) === genderFilter);
     }
     if (search.trim()) {
       const q = search.toLowerCase().trim();
@@ -359,14 +409,10 @@ function AttendanceContent() {
   const filteredAbsent = useMemo(() => {
     let list = absentRows;
     if (deptFilter) {
-      list = list.filter(
-        (r) => (r.department || "Unassigned") === deptFilter
-      );
+      list = list.filter((r) => (r.department || "Unassigned") === deptFilter);
     }
     if (genderFilter) {
-      list = list.filter(
-        (r) => normalizeGender(r.gender) === genderFilter
-      );
+      list = list.filter((r) => normalizeGender(r.gender) === genderFilter);
     }
     if (search.trim()) {
       const q = search.toLowerCase().trim();
@@ -383,11 +429,9 @@ function AttendanceContent() {
   const displayCount =
     filter === "absent" ? filteredAbsent.length : filteredRows.length;
 
-  // ── Cascading Snapshots ─────────────────────────────────────────────────
-  const sourceForSnapshots =
-    filter === "absent" ? absentRows : rows;
+  // Snapshots
+  const sourceForSnapshots = filter === "absent" ? absentRows : rows;
 
-  // When Gender is selected → Department counts only show that gender
   const baseForDept = useMemo(() => {
     let list = sourceForSnapshots;
     if (genderFilter) {
@@ -396,13 +440,10 @@ function AttendanceContent() {
     return list;
   }, [sourceForSnapshots, genderFilter]);
 
-  // When Department is selected → Gender counts only show that department
   const baseForGender = useMemo(() => {
     let list = sourceForSnapshots;
     if (deptFilter) {
-      list = list.filter(
-        (r) => (r.department || "Unassigned") === deptFilter
-      );
+      list = list.filter((r) => (r.department || "Unassigned") === deptFilter);
     }
     return list;
   }, [sourceForSnapshots, deptFilter]);
@@ -430,11 +471,9 @@ function AttendanceContent() {
       .map((name) => ({ name, count: map.get(name)! }));
   }, [baseForGender]);
 
-  // ── Download CSV ────────────────────────────────────────────────────────
   function downloadCSV() {
-    const today = todayIST();
     let csvContent = "";
-    let filename = `attendance_${filter}_${today}.csv`;
+    let filename = `attendance_${filter}_${selectedDate}.csv`;
 
     if (filter === "absent") {
       csvContent = "Employee ID,Name,Department,Gender,Status\n";
@@ -450,20 +489,15 @@ function AttendanceContent() {
         const late = isLateWithShift(
           r.check_in,
           r.shift_start,
-          r.grace_minutes ?? 15
+          r.grace_minutes ?? 15,
+          busDelay
         );
         const working = r.check_in && !r.check_out;
         const isHalfDay = r.status === "HALF_DAY";
-        const isOT =
-          r.check_out &&
-          r.shift_end &&
-          (getMinutesIST(r.check_out) ?? 0) >
-            timeStringToMinutes(r.shift_end) + 15;
 
         let status = "Present";
         if (isHalfDay) status = "Half Day";
         else if (working) status = "Working";
-        else if (isOT) status = "OT";
         else if (late) status = "Late";
 
         csvContent += `"${r.employee_code}","${r.full_name}","${
@@ -484,10 +518,10 @@ function AttendanceContent() {
   }
 
   const titles: Record<FilterType, string> = {
-    all: "Today's Attendance",
-    present: "Present Today",
-    absent: "Absent Today",
-    late: "Late Today",
+    all: "Attendance",
+    present: "Present",
+    absent: "Absent",
+    late: "Late",
     working: "Currently Working",
   };
 
@@ -497,29 +531,75 @@ function AttendanceContent() {
         <MainMenu />
 
         {/* Header */}
-        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="text-xl font-bold text-slate-800">
               {titles[filter]}
             </h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              {filter === "absent"
-                ? "On roster but not checked in"
-                : "Attendance records for today"}
+              {formatDisplayDate(selectedDate)}
+              {isToday ? " · Today" : ""}
+              {busDelay > 0 && (
+                <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                  Bus Delay: +{busDelay} min
+                </span>
+              )}
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Date Picker */}
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={handleDateChange}
+              max={todayIST()}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 focus:border-slate-500 focus:outline-none"
+            />
+            {!isToday && (
+              <button
+                onClick={goToToday}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Today
+              </button>
+            )}
+
+            {/* Bus Delay Control */}
+            <div className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-1">
+              <span className="text-[11px] font-medium text-slate-500">
+                Bus Delay:
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={180}
+                value={busDelayInput}
+                onChange={(e) => setBusDelayInput(e.target.value)}
+                className="w-14 rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-700 focus:outline-none"
+              />
+              <span className="text-[11px] text-slate-400">min</span>
+              <button
+                onClick={saveBusDelay}
+                disabled={savingDelay}
+                className="rounded bg-slate-800 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                {savingDelay ? "..." : "Save"}
+              </button>
+            </div>
+
             <span className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600">
               {displayCount} records
             </span>
+
             <button
-              onClick={() => loadData(filter)}
+              onClick={() => loadData(filter, selectedDate)}
               disabled={loading}
               className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
             >
               {loading ? "Loading..." : "Refresh"}
             </button>
+
             <button
               onClick={downloadCSV}
               disabled={loading || displayCount === 0}
@@ -660,24 +740,7 @@ function AttendanceContent() {
           </div>
         )}
 
-        {/* Active secondary filters hint */}
-        {(deptFilter || genderFilter) && (
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-            <span>Filtered by:</span>
-            {deptFilter && (
-              <span className="rounded-full bg-slate-200 px-2 py-0.5 font-medium text-slate-700">
-                {deptFilter}
-              </span>
-            )}
-            {genderFilter && (
-              <span className="rounded-full bg-slate-200 px-2 py-0.5 font-medium text-slate-700">
-                {genderFilter}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Table Card */}
+        {/* Table */}
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           {loading ? (
             <div className="py-16 text-center text-xs text-slate-400">
@@ -688,53 +751,27 @@ function AttendanceContent() {
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/80">
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Emp ID
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Name
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Department
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Gender
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Status
-                    </th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Emp ID</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Name</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Department</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Gender</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredAbsent.length === 0 ? (
                     <tr>
-                      <td
-                        colSpan={5}
-                        className="px-4 py-12 text-center text-slate-400"
-                      >
-                        {search || deptFilter || genderFilter
-                          ? "No matching records"
-                          : "No absentees found"}
+                      <td colSpan={5} className="px-4 py-12 text-center text-slate-400">
+                        No absentees found
                       </td>
                     </tr>
                   ) : (
                     filteredAbsent.map((item) => (
-                      <tr
-                        key={item.employee_id}
-                        className="border-b border-slate-50 hover:bg-slate-50/50"
-                      >
-                        <td className="px-4 py-2.5 font-medium text-slate-700">
-                          {item.employee_code}
-                        </td>
-                        <td className="px-4 py-2.5 text-slate-800">
-                          {item.full_name}
-                        </td>
-                        <td className="px-4 py-2.5 text-slate-600">
-                          {item.department || "—"}
-                        </td>
-                        <td className="px-4 py-2.5 text-slate-600">
-                          {normalizeGender(item.gender)}
-                        </td>
+                      <tr key={item.employee_id} className="border-b border-slate-50 hover:bg-slate-50/50">
+                        <td className="px-4 py-2.5 font-medium text-slate-700">{item.employee_code}</td>
+                        <td className="px-4 py-2.5 text-slate-800">{item.full_name}</td>
+                        <td className="px-4 py-2.5 text-slate-600">{item.department || "—"}</td>
+                        <td className="px-4 py-2.5 text-slate-600">{normalizeGender(item.gender)}</td>
                         <td className="px-4 py-2.5">
                           <span className="inline-flex rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-600">
                             Absent
@@ -751,39 +788,20 @@ function AttendanceContent() {
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50/80">
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Emp ID
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Name
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Department
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Gender
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Check In
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Check Out
-                    </th>
-                    <th className="px-4 py-2.5 font-medium text-slate-500">
-                      Status
-                    </th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Emp ID</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Name</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Department</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Gender</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Check In</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Check Out</th>
+                    <th className="px-4 py-2.5 font-medium text-slate-500">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredRows.length === 0 ? (
                     <tr>
-                      <td
-                        colSpan={7}
-                        className="px-4 py-12 text-center text-slate-400"
-                      >
-                        {search || deptFilter || genderFilter
-                          ? "No matching records"
-                          : "No records found"}
+                      <td colSpan={7} className="px-4 py-12 text-center text-slate-400">
+                        No records found
                       </td>
                     </tr>
                   ) : (
@@ -791,63 +809,38 @@ function AttendanceContent() {
                       const late = isLateWithShift(
                         item.check_in,
                         item.shift_start,
-                        item.grace_minutes ?? 15
+                        item.grace_minutes ?? 15,
+                        busDelay
                       );
                       const working = item.check_in && !item.check_out;
                       const isHalfDay = item.status === "HALF_DAY";
-                      const isOT =
-                        item.check_out &&
-                        item.shift_end &&
-                        (getMinutesIST(item.check_out) ?? 0) >
-                          timeStringToMinutes(item.shift_end) + 15;
+
+                      let statusLabel = "Present";
+                      let statusClass = "bg-emerald-50 text-emerald-700";
+
+                      if (isHalfDay) {
+                        statusLabel = "Half Day";
+                        statusClass = "bg-orange-50 text-orange-700";
+                      } else if (working) {
+                        statusLabel = "Working";
+                        statusClass = "bg-sky-50 text-sky-700";
+                      } else if (late) {
+                        statusLabel = "Late";
+                        statusClass = "bg-amber-50 text-amber-700";
+                      }
 
                       return (
-                        <tr
-                          key={item.id}
-                          className="border-b border-slate-50 hover:bg-slate-50/50"
-                        >
-                          <td className="px-4 py-2.5 font-medium text-slate-700">
-                            {item.employee_code}
-                          </td>
-                          <td className="px-4 py-2.5 text-slate-800">
-                            {item.full_name}
-                          </td>
-                          <td className="px-4 py-2.5 text-slate-600">
-                            {item.department || "—"}
-                          </td>
-                          <td className="px-4 py-2.5 text-slate-600">
-                            {normalizeGender(item.gender)}
-                          </td>
-                          <td className="px-4 py-2.5 text-slate-700">
-                            {formatTimeIST(item.check_in)}
-                          </td>
-                          <td className="px-4 py-2.5 text-slate-700">
-                            {item.check_out
-                              ? formatTimeIST(item.check_out)
-                              : "—"}
-                          </td>
+                        <tr key={item.id} className="border-b border-slate-50 hover:bg-slate-50/50">
+                          <td className="px-4 py-2.5 font-medium text-slate-700">{item.employee_code}</td>
+                          <td className="px-4 py-2.5 text-slate-800">{item.full_name}</td>
+                          <td className="px-4 py-2.5 text-slate-600">{item.department || "—"}</td>
+                          <td className="px-4 py-2.5 text-slate-600">{normalizeGender(item.gender)}</td>
+                          <td className="px-4 py-2.5 text-slate-700">{formatTimeIST(item.check_in)}</td>
+                          <td className="px-4 py-2.5 text-slate-700">{formatTimeIST(item.check_out)}</td>
                           <td className="px-4 py-2.5">
-                            {isHalfDay ? (
-                              <span className="inline-flex rounded-full bg-purple-50 px-2 py-0.5 text-[10px] font-medium text-purple-700">
-                                Half Day
-                              </span>
-                            ) : working ? (
-                              <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600">
-                                Working
-                              </span>
-                            ) : isOT ? (
-                              <span className="inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700">
-                                OT
-                              </span>
-                            ) : late ? (
-                              <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">
-                                Late
-                              </span>
-                            ) : (
-                              <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-600">
-                                Present
-                              </span>
-                            )}
+                            <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${statusClass}`}>
+                              {statusLabel}
+                            </span>
                           </td>
                         </tr>
                       );
@@ -867,8 +860,8 @@ export default function AttendancePage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-slate-50">
-          <div className="text-sm text-slate-500">Loading attendance...</div>
+        <div className="flex min-h-screen items-center justify-center bg-slate-100">
+          <p className="text-sm text-slate-400">Loading attendance…</p>
         </div>
       }
     >

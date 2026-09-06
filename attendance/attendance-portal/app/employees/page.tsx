@@ -11,9 +11,15 @@ import {
 import MainMenu from "@/components/MainMenu";
 import { createClient } from "@/lib/supabase";
 
-type SkillLevel = "SKILLED" | "SEMI_SKILLED" | "UNSKILLED";
+type SkillLevel =
+  | "SKILLED"
+  | "SEMI_SKILLED"
+  | "UNSKILLED";
 
-type Gender = "Male" | "Female" | "Other";
+type Gender =
+  | "Male"
+  | "Female"
+  | "Other";
 
 type Employee = {
   id: string;
@@ -59,12 +65,19 @@ type BulkRow = {
   _existingId?: string;
 };
 
-type ModalMode = "single" | "bulk_add" | "bulk_edit";
+type ModalMode =
+  | "single"
+  | "bulk_add"
+  | "bulk_edit";
+
+/* ============================================================
+   MASTER VALUES
+============================================================ */
 
 const VENDORS = [
   "Jeevdani",
-  "FUTURZ",
-  "MACRON",
+  "Futurz",
+  "Macron",
   "PSN",
 ];
 
@@ -73,6 +86,12 @@ const CUSTOMER_ACCOUNTS = [
   "Happy Ecom",
   "Flipkart",
 ];
+
+const NO_VENDOR_VALUE = "__NO_VENDOR__";
+
+/* ============================================================
+   EMPTY FORM
+============================================================ */
 
 const EMPTY_FORM: EmployeeForm = {
   employee_code: "",
@@ -87,13 +106,22 @@ const EMPTY_FORM: EmployeeForm = {
   joining_date: "",
 };
 
-function normalizeSkillLevel(value: string): SkillLevel {
+/* ============================================================
+   NORMALIZE SKILL
+============================================================ */
+
+function normalizeSkillLevel(
+  value: string
+): SkillLevel {
   const v = value
     .trim()
     .toUpperCase()
     .replace(/[\s-]+/g, "_");
 
-  if (v === "SKILLED" || v === "S") {
+  if (
+    v === "SKILLED" ||
+    v === "S"
+  ) {
     return "SKILLED";
   }
 
@@ -127,23 +155,119 @@ function normalizeSkillLevel(value: string): SkillLevel {
   return "UNSKILLED";
 }
 
-function skillLabel(type: SkillLevel) {
-  if (type === "SKILLED") return "Skilled";
-  if (type === "SEMI_SKILLED") return "Semi-Skilled";
+/* ============================================================
+   SKILL LABEL
+============================================================ */
+
+function skillLabel(
+  type: SkillLevel
+) {
+  if (type === "SKILLED") {
+    return "Skilled";
+  }
+
+  if (
+    type === "SEMI_SKILLED"
+  ) {
+    return "Semi-Skilled";
+  }
+
   return "Unskilled";
 }
+
+/* ============================================================
+   NORMALIZE GENDER
+============================================================ */
 
 function normalizeGender(
   value: string
 ): Gender | "" {
-  const v = value.trim().toLowerCase();
+  const v = value
+    .trim()
+    .toLowerCase();
 
-  if (v === "male" || v === "m") return "Male";
-  if (v === "female" || v === "f") return "Female";
-  if (v === "other" || v === "o") return "Other";
+  if (
+    v === "male" ||
+    v === "m"
+  ) {
+    return "Male";
+  }
+
+  if (
+    v === "female" ||
+    v === "f"
+  ) {
+    return "Female";
+  }
+
+  if (
+    v === "other" ||
+    v === "o"
+  ) {
+    return "Other";
+  }
 
   return "";
 }
+
+/* ============================================================
+   NORMALIZE VENDOR
+
+   Database canonical values:
+
+   Jeevdani
+   Futurz
+   Macron
+   PSN
+============================================================ */
+
+function normalizeVendor(
+  value: string
+): string {
+  const v = value
+    .trim()
+    .toLowerCase();
+
+  if (!v) {
+    return "";
+  }
+
+  if (
+    v === "jeevdani"
+  ) {
+    return "Jeevdani";
+  }
+
+  if (
+    v === "futurz" ||
+    v === "futurez" ||
+    v === "furturz"
+  ) {
+    return "Futurz";
+  }
+
+  if (
+    v === "macron"
+  ) {
+    return "Macron";
+  }
+
+  if (
+    v === "psn"
+  ) {
+    return "PSN";
+  }
+
+  /*
+   * Unknown values are preserved instead of
+   * silently deleting them.
+   */
+  return value.trim();
+}
+
+/* ============================================================
+   PARSE BULK TEXT
+============================================================ */
 
 /**
  * Bulk columns:
@@ -159,7 +283,10 @@ function normalizeGender(
  * CustomerAccount
  * JoiningDate
  */
-function parseBulkText(raw: string): BulkRow[] {
+
+function parseBulkText(
+  raw: string
+): BulkRow[] {
   const lines = raw
     .trim()
     .split(/\r?\n/)
@@ -172,111 +299,181 @@ function parseBulkText(raw: string): BulkRow[] {
 
   const firstLine = lines[0];
 
-  const delimiter = firstLine.includes("\t")
-    ? "\t"
-    : firstLine.includes(",")
-      ? ","
-      : "\t";
+  const delimiter =
+    firstLine.includes("\t")
+      ? "\t"
+      : firstLine.includes(",")
+        ? ","
+        : "\t";
 
-  const rows = lines.map((line) =>
-    line
-      .split(delimiter)
-      .map((cell) =>
-        cell.trim().replace(/^"|"$/g, "")
-      )
+  const rows = lines.map(
+    (line) =>
+      line
+        .split(delimiter)
+        .map((cell) =>
+          cell
+            .trim()
+            .replace(/^"|"$/g, "")
+        )
   );
 
-  const firstCells = rows[0].map((cell) =>
-    cell
-      .toLowerCase()
-      .replace(/\s+/g, "_")
+  const firstCells = rows[0].map(
+    (cell) =>
+      cell
+        .toLowerCase()
+        .replace(/\s+/g, "_")
   );
 
   const looksLikeHeader =
-    firstCells.includes("employee_code") ||
-    firstCells.includes("employeeid") ||
-    firstCells.includes("emp_id") ||
-    firstCells.includes("barcode") ||
-    firstCells.includes("full_name") ||
-    firstCells.includes("name") ||
-    firstCells.includes("gender") ||
-    firstCells.includes("vendor");
-
-  const dataRows = looksLikeHeader
-    ? rows.slice(1)
-    : rows;
-
-  return dataRows.map((cells) => {
-    const employee_code = (
-      cells[0] || ""
-    ).toUpperCase();
-
-    const barcode = cells[1] || "";
-    const full_name = cells[2] || "";
-    const department = cells[3] || "";
-    const designation = cells[4] || "";
-
-    const employment_type =
-      normalizeSkillLevel(
-        cells[5] || "UNSKILLED"
-      );
-
-    const gender = normalizeGender(
-      cells[6] || ""
+    firstCells.includes(
+      "employee_code"
+    ) ||
+    firstCells.includes(
+      "employeeid"
+    ) ||
+    firstCells.includes(
+      "emp_id"
+    ) ||
+    firstCells.includes(
+      "barcode"
+    ) ||
+    firstCells.includes(
+      "full_name"
+    ) ||
+    firstCells.includes(
+      "name"
+    ) ||
+    firstCells.includes(
+      "gender"
+    ) ||
+    firstCells.includes(
+      "vendor"
     );
 
-    const vendor = cells[7] || "";
-    const customer_account = cells[8] || "";
+  const dataRows =
+    looksLikeHeader
+      ? rows.slice(1)
+      : rows;
 
-    let joining_date = cells[9] || "";
+  return dataRows.map(
+    (cells) => {
+      const employee_code = (
+        cells[0] || ""
+      )
+        .trim()
+        .toUpperCase();
 
-    if (joining_date) {
-      const dmy = joining_date.match(
-        /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/
-      );
+      const barcode =
+        cells[1] || "";
 
-      if (dmy) {
-        joining_date =
-          `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
+      const full_name =
+        cells[2] || "";
+
+      const department =
+        cells[3] || "";
+
+      const designation =
+        cells[4] || "";
+
+      const employment_type =
+        normalizeSkillLevel(
+          cells[5] ||
+            "UNSKILLED"
+        );
+
+      const gender =
+        normalizeGender(
+          cells[6] || ""
+        );
+
+      /*
+       * IMPORTANT:
+       * Normalize vendor during bulk import.
+       */
+      const vendor =
+        normalizeVendor(
+          cells[7] || ""
+        );
+
+      const customer_account =
+        cells[8] || "";
+
+      let joining_date =
+        cells[9] || "";
+
+      /*
+       * Convert DD/MM/YYYY or DD-MM-YYYY
+       * to YYYY-MM-DD.
+       */
+      if (joining_date) {
+        const dmy =
+          joining_date.match(
+            /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/
+          );
+
+        if (dmy) {
+          joining_date =
+            `${dmy[3]}-${dmy[2].padStart(
+              2,
+              "0"
+            )}-${dmy[1].padStart(
+              2,
+              "0"
+            )}`;
+        }
       }
+
+      const row: BulkRow = {
+        employee_code,
+        barcode,
+        full_name,
+        department,
+        designation,
+        employment_type,
+        gender,
+        vendor,
+        customer_account,
+        joining_date,
+      };
+
+      const errors: string[] =
+        [];
+
+      if (!employee_code) {
+        errors.push(
+          "Employee ID required"
+        );
+      }
+
+      if (!barcode) {
+        errors.push(
+          "Barcode required"
+        );
+      }
+
+      if (!full_name) {
+        errors.push(
+          "Name required"
+        );
+      }
+
+      if (errors.length) {
+        row.error =
+          errors.join(", ");
+      }
+
+      return row;
     }
-
-    const row: BulkRow = {
-      employee_code,
-      barcode,
-      full_name,
-      department,
-      designation,
-      employment_type,
-      gender,
-      vendor,
-      customer_account,
-      joining_date,
-    };
-
-    const errors: string[] = [];
-
-    if (!employee_code) {
-      errors.push("Employee ID required");
-    }
-
-    if (!barcode) {
-      errors.push("Barcode required");
-    }
-
-    if (!full_name) {
-      errors.push("Name required");
-    }
-
-    if (errors.length) {
-      row.error = errors.join(", ");
-    }
-
-    return row;
-  });
+  );
 }
 
-function csvEscape(value: unknown): string {
+/* ============================================================
+   CSV ESCAPE
+============================================================ */
+
+function csvEscape(
+  value: unknown
+): string {
   const text = String(
     value ?? ""
   );
@@ -287,105 +484,179 @@ function csvEscape(value: unknown): string {
     text.includes("\n") ||
     text.includes("\r")
   ) {
-    return `"${text.replace(/"/g, '""')}"`;
+    return `"${text.replace(
+      /"/g,
+      '""'
+    )}"`;
   }
 
   return text;
 }
 
+/* ============================================================
+   PAGE
+============================================================ */
+
 export default function EmployeesPage() {
-  const supabase = createClient();
+  const supabase =
+    createClient();
 
-  const [employees, setEmployees] =
-    useState<Employee[]>([]);
+  const [
+    employees,
+    setEmployees,
+  ] = useState<Employee[]>(
+    []
+  );
 
-  const [search, setSearch] = useState("");
+  const [
+    search,
+    setSearch,
+  ] = useState("");
 
-  const [departmentFilter, setDepartmentFilter] =
-    useState("");
+  const [
+    departmentFilter,
+    setDepartmentFilter,
+  ] = useState("");
 
-  const [designationFilter, setDesignationFilter] =
-    useState("");
+  const [
+    designationFilter,
+    setDesignationFilter,
+  ] = useState("");
 
-  const [typeFilter, setTypeFilter] =
-    useState("");
+  const [
+    typeFilter,
+    setTypeFilter,
+  ] = useState("");
 
-  const [genderFilter, setGenderFilter] =
-    useState("");
+  const [
+    genderFilter,
+    setGenderFilter,
+  ] = useState("");
 
-  const [vendorFilter, setVendorFilter] =
-    useState("");
+  const [
+    vendorFilter,
+    setVendorFilter,
+  ] = useState("");
 
-  const [customerFilter, setCustomerFilter] =
-    useState("");
+  const [
+    customerFilter,
+    setCustomerFilter,
+  ] = useState("");
 
-  const [statusFilter, setStatusFilter] =
-    useState("");
+  const [
+    statusFilter,
+    setStatusFilter,
+  ] = useState("");
 
-  const [showFilters, setShowFilters] =
-    useState(true);
+  const [
+    showFilters,
+    setShowFilters,
+  ] = useState(true);
 
-  const [showModal, setShowModal] =
-    useState(false);
+  const [
+    showModal,
+    setShowModal,
+  ] = useState(false);
 
-  const [editingEmployee, setEditingEmployee] =
-    useState<Employee | null>(null);
+  const [
+    editingEmployee,
+    setEditingEmployee,
+  ] = useState<Employee | null>(
+    null
+  );
 
-  const [form, setForm] =
-    useState<EmployeeForm>(EMPTY_FORM);
+  const [
+    form,
+    setForm,
+  ] = useState<EmployeeForm>(
+    EMPTY_FORM
+  );
 
-  const [loading, setLoading] =
-    useState(true);
+  const [
+    loading,
+    setLoading,
+  ] = useState(true);
 
-  const [saving, setSaving] =
-    useState(false);
+  const [
+    saving,
+    setSaving,
+  ] = useState(false);
 
-  const [error, setError] =
-    useState("");
+  const [
+    error,
+    setError,
+  ] = useState("");
 
-  const [success, setSuccess] =
-    useState("");
+  const [
+    success,
+    setSuccess,
+  ] = useState("");
 
-  const [isAdmin, setIsAdmin] =
-    useState(false);
+  const [
+    isAdmin,
+    setIsAdmin,
+  ] = useState(false);
 
-  const [modalMode, setModalMode] =
-    useState<ModalMode>("single");
+  const [
+    modalMode,
+    setModalMode,
+  ] = useState<ModalMode>(
+    "single"
+  );
 
-  const [bulkText, setBulkText] =
-    useState("");
+  const [
+    bulkText,
+    setBulkText,
+  ] = useState("");
 
-  const [bulkRows, setBulkRows] =
-    useState<BulkRow[]>([]);
+  const [
+    bulkRows,
+    setBulkRows,
+  ] = useState<BulkRow[]>(
+    []
+  );
 
-  const [showConfirm, setShowConfirm] =
-    useState(false);
+  const [
+    showConfirm,
+    setShowConfirm,
+  ] = useState(false);
 
-  const [pendingBulkAction, setPendingBulkAction] =
-    useState<"add" | "edit" | null>(null);
+  const [
+    pendingBulkAction,
+    setPendingBulkAction,
+  ] = useState<
+    "add" | "edit" | null
+  >(null);
 
-  // ------------------------------------------------------------
-  // ADMIN CHECK
-  // ------------------------------------------------------------
+  /* ============================================================
+     ADMIN CHECK
+  ============================================================ */
 
   async function checkAdmin() {
     try {
       const {
         data: { user },
-      } = await supabase.auth.getUser();
+      } =
+        await supabase.auth.getUser();
 
       if (!user) {
         setIsAdmin(false);
         return;
       }
 
-      const metaRole = String(
-        user.app_metadata?.role ||
-          user.user_metadata?.role ||
-          ""
-      )
-        .toLowerCase()
-        .replace(/-/g, "_");
+      const metaRole =
+        String(
+          user.app_metadata
+            ?.role ||
+            user.user_metadata
+              ?.role ||
+            ""
+        )
+          .toLowerCase()
+          .replace(
+            /-/g,
+            "_"
+          );
 
       if (
         [
@@ -398,18 +669,23 @@ export default function EmployeesPage() {
         return;
       }
 
-      const { data: profile } =
-        await supabase
-          .from("profiles")
-          .select("role")
-          .eq("id", user.id)
-          .maybeSingle();
+      const {
+        data: profile,
+      } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .maybeSingle();
 
-      const pRole = String(
-        profile?.role || ""
-      )
-        .toLowerCase()
-        .replace(/-/g, "_");
+      const pRole =
+        String(
+          profile?.role || ""
+        )
+          .toLowerCase()
+          .replace(
+            /-/g,
+            "_"
+          );
 
       setIsAdmin(
         [
@@ -423,47 +699,59 @@ export default function EmployeesPage() {
     }
   }
 
-  // ------------------------------------------------------------
-  // LOAD EMPLOYEES
-  // ------------------------------------------------------------
+  /* ============================================================
+     LOAD EMPLOYEES
+  ============================================================ */
 
   async function loadEmployees() {
     setLoading(true);
     setError("");
 
-    const { data, error: loadError } =
-      await supabase
-        .from("employees")
-        .select(
-          [
-            "id",
-            "employee_code",
-            "barcode",
-            "full_name",
-            "department",
-            "designation",
-            "employment_type",
-            "gender",
-            "vendor",
-            "customer_account",
-            "joining_date",
-            "is_active",
-            "created_at",
-          ].join(", ")
-        )
-        .order("full_name", {
+    const {
+      data,
+      error: loadError,
+    } = await supabase
+      .from("employees")
+      .select(
+        [
+          "id",
+          "employee_code",
+          "barcode",
+          "full_name",
+          "department",
+          "designation",
+          "employment_type",
+          "gender",
+          "vendor",
+          "customer_account",
+          "joining_date",
+          "is_active",
+          "created_at",
+        ].join(", ")
+      )
+      .order(
+        "full_name",
+        {
           ascending: true,
-        });
+        }
+      );
 
     if (loadError) {
-      console.error(loadError);
-      setError(loadError.message);
+      console.error(
+        loadError
+      );
+
+      setError(
+        loadError.message
+      );
+
       setLoading(false);
       return;
     }
 
     setEmployees(
-      (data || []) as unknown as Employee[]
+      (data ||
+        []) as unknown as Employee[]
     );
 
     setLoading(false);
@@ -474,162 +762,215 @@ export default function EmployeesPage() {
     loadEmployees();
   }, []);
 
-  // ------------------------------------------------------------
-  // UNIQUE FILTER VALUES
-  // ------------------------------------------------------------
+  /* ============================================================
+     FILTER VALUES
+  ============================================================ */
 
-  const departments = useMemo(() => {
-    return Array.from(
-      new Set(
-        employees
-          .map((e) => e.department)
-          .filter(Boolean)
-      )
-    ).sort();
-  }, [employees]);
-
-  const designations = useMemo(() => {
-    return Array.from(
-      new Set(
-        employees
-          .map((e) => e.designation)
-          .filter(Boolean)
-      )
-    ).sort();
-  }, [employees]);
-
-  const vendors = useMemo(() => {
-    return Array.from(
-      new Set(
-        [
-          ...VENDORS,
-          ...employees
-            .map((e) => e.vendor)
-            .filter(Boolean),
-        ]
-      )
-    ).sort();
-  }, [employees]);
-
-  const customerAccounts = useMemo(() => {
-    return Array.from(
-      new Set(
-        [
-          ...CUSTOMER_ACCOUNTS,
-          ...employees
-            .map((e) => e.customer_account)
-            .filter(Boolean),
-        ]
-      )
-    ).sort();
-  }, [employees]);
-
-  // ------------------------------------------------------------
-  // FILTER EMPLOYEES
-  // ------------------------------------------------------------
-
-  const filteredEmployees = useMemo(() => {
-    const value =
-      search.trim().toLowerCase();
-
-    return employees.filter((employee) => {
-      const matchesSearch =
-        !value ||
-        employee.employee_code
-          .toLowerCase()
-          .includes(value) ||
-        employee.barcode
-          .toLowerCase()
-          .includes(value) ||
-        employee.full_name
-          .toLowerCase()
-          .includes(value) ||
-        (employee.department || "")
-          .toLowerCase()
-          .includes(value) ||
-        (employee.designation || "")
-          .toLowerCase()
-          .includes(value) ||
-        (employee.gender || "")
-          .toLowerCase()
-          .includes(value) ||
-        (employee.vendor || "")
-          .toLowerCase()
-          .includes(value) ||
-        (employee.customer_account || "")
-          .toLowerCase()
-          .includes(value) ||
-        skillLabel(
-          employee.employment_type
+  const departments =
+    useMemo(() => {
+      return Array.from(
+        new Set(
+          employees
+            .map(
+              (e) =>
+                e.department
+            )
+            .filter(Boolean)
         )
-          .toLowerCase()
-          .includes(value);
+      ).sort();
+    }, [employees]);
 
-      const matchesDepartment =
-        !departmentFilter ||
-        employee.department ===
-          departmentFilter;
+  const designations =
+    useMemo(() => {
+      return Array.from(
+        new Set(
+          employees
+            .map(
+              (e) =>
+                e.designation
+            )
+            .filter(Boolean)
+        )
+      ).sort();
+    }, [employees]);
 
-      const matchesDesignation =
-        !designationFilter ||
-        employee.designation ===
-          designationFilter;
+  /*
+   * Vendor list intentionally comes ONLY from
+   * the master VENDORS array.
+   *
+   * We do NOT append employee.vendor values,
+   * otherwise old/incorrect values can appear
+   * in the dropdown.
+   */
+  const vendors =
+    useMemo(() => {
+      return VENDORS;
+    }, []);
 
-      const matchesType =
-        !typeFilter ||
-        employee.employment_type ===
-          typeFilter;
+  const customerAccounts =
+    useMemo(() => {
+      return Array.from(
+        new Set(
+          [
+            ...CUSTOMER_ACCOUNTS,
+            ...employees
+              .map(
+                (e) =>
+                  e.customer_account
+              )
+              .filter(Boolean),
+          ]
+        )
+      ).sort();
+    }, [employees]);
 
-      const matchesGender =
-        !genderFilter ||
-        employee.gender ===
-          genderFilter;
+  /* ============================================================
+     FILTER EMPLOYEES
+  ============================================================ */
 
-      const matchesVendor =
-        !vendorFilter ||
-        employee.vendor ===
-          vendorFilter;
+  const filteredEmployees =
+    useMemo(() => {
+      const value =
+        search
+          .trim()
+          .toLowerCase();
 
-      const matchesCustomer =
-        !customerFilter ||
-        employee.customer_account ===
-          customerFilter;
+      return employees.filter(
+        (employee) => {
+          const matchesSearch =
+            !value ||
+            employee.employee_code
+              .toLowerCase()
+              .includes(value) ||
+            employee.barcode
+              .toLowerCase()
+              .includes(value) ||
+            employee.full_name
+              .toLowerCase()
+              .includes(value) ||
+            (
+              employee.department ||
+              ""
+            )
+              .toLowerCase()
+              .includes(value) ||
+            (
+              employee.designation ||
+              ""
+            )
+              .toLowerCase()
+              .includes(value) ||
+            (
+              employee.gender ||
+              ""
+            )
+              .toLowerCase()
+              .includes(value) ||
+            (
+              employee.vendor ||
+              ""
+            )
+              .toLowerCase()
+              .includes(value) ||
+            (
+              employee.customer_account ||
+              ""
+            )
+              .toLowerCase()
+              .includes(value) ||
+            skillLabel(
+              employee.employment_type
+            )
+              .toLowerCase()
+              .includes(value);
 
-      const matchesStatus =
-        !statusFilter ||
-        (statusFilter === "active"
-          ? employee.is_active
-          : !employee.is_active);
+          const matchesDepartment =
+            !departmentFilter ||
+            employee.department ===
+              departmentFilter;
 
-      return (
-        matchesSearch &&
-        matchesDepartment &&
-        matchesDesignation &&
-        matchesType &&
-        matchesGender &&
-        matchesVendor &&
-        matchesCustomer &&
-        matchesStatus
+          const matchesDesignation =
+            !designationFilter ||
+            employee.designation ===
+              designationFilter;
+
+          const matchesType =
+            !typeFilter ||
+            employee.employment_type ===
+              typeFilter;
+
+          const matchesGender =
+            !genderFilter ||
+            employee.gender ===
+              genderFilter;
+
+          /*
+           * Vendor filter:
+           *
+           * normal vendor:
+           * employee.vendor === vendorFilter
+           *
+           * No Vendor Mapped:
+           * vendor is NULL or empty
+           */
+          const matchesVendor =
+            !vendorFilter
+              ? true
+              : vendorFilter ===
+                  NO_VENDOR_VALUE
+                ? !employee.vendor ||
+                  employee.vendor.trim() ===
+                    ""
+                : employee.vendor ===
+                  vendorFilter;
+
+          const matchesCustomer =
+            !customerFilter ||
+            employee.customer_account ===
+              customerFilter;
+
+          const matchesStatus =
+            !statusFilter ||
+            (
+              statusFilter ===
+              "active"
+                ? employee.is_active
+                : !employee.is_active
+            );
+
+          return (
+            matchesSearch &&
+            matchesDepartment &&
+            matchesDesignation &&
+            matchesType &&
+            matchesGender &&
+            matchesVendor &&
+            matchesCustomer &&
+            matchesStatus
+          );
+        }
       );
-    });
-  }, [
-    employees,
-    search,
-    departmentFilter,
-    designationFilter,
-    typeFilter,
-    genderFilter,
-    vendorFilter,
-    customerFilter,
-    statusFilter,
-  ]);
+    }, [
+      employees,
+      search,
+      departmentFilter,
+      designationFilter,
+      typeFilter,
+      genderFilter,
+      vendorFilter,
+      customerFilter,
+      statusFilter,
+    ]);
 
-  // ------------------------------------------------------------
-  // CSV DOWNLOAD
-  // ------------------------------------------------------------
+  /* ============================================================
+     CSV
+  ============================================================ */
 
   function downloadCSV() {
-    if (filteredEmployees.length === 0) {
+    if (
+      filteredEmployees.length ===
+      0
+    ) {
       setError(
         "No employees available for CSV download."
       );
@@ -650,45 +991,59 @@ export default function EmployeesPage() {
       "Status",
     ];
 
-    const rows = filteredEmployees.map(
-      (employee) => [
-        employee.employee_code,
-        employee.barcode,
-        employee.full_name,
-        employee.gender || "",
-        employee.department || "",
-        employee.designation || "",
-        skillLabel(
-          employee.employment_type
-        ),
-        employee.vendor || "",
-        employee.customer_account || "",
-        employee.joining_date || "",
-        employee.is_active
-          ? "Active"
-          : "Inactive",
-      ]
-    );
+    const rows =
+      filteredEmployees.map(
+        (employee) => [
+          employee.employee_code,
+          employee.barcode,
+          employee.full_name,
+          employee.gender || "",
+          employee.department ||
+            "",
+          employee.designation ||
+            "",
+          skillLabel(
+            employee.employment_type
+          ),
+          employee.vendor || "",
+          employee.customer_account ||
+            "",
+          employee.joining_date ||
+            "",
+          employee.is_active
+            ? "Active"
+            : "Inactive",
+        ]
+      );
 
     const csv = [
-      headers.map(csvEscape).join(","),
+      headers
+        .map(csvEscape)
+        .join(","),
       ...rows.map((row) =>
-        row.map(csvEscape).join(",")
+        row
+          .map(csvEscape)
+          .join(",")
       ),
     ].join("\r\n");
 
-    const blob = new Blob(
-      ["\uFEFF" + csv],
-      {
-        type: "text/csv;charset=utf-8;",
-      }
-    );
+    const blob =
+      new Blob(
+        ["\uFEFF" + csv],
+        {
+          type: "text/csv;charset=utf-8;",
+        }
+      );
 
     const url =
-      URL.createObjectURL(blob);
+      URL.createObjectURL(
+        blob
+      );
 
     const link =
-      document.createElement("a");
+      document.createElement(
+        "a"
+      );
 
     link.href = url;
 
@@ -700,20 +1055,28 @@ export default function EmployeesPage() {
     link.download =
       `employees_${date}.csv`;
 
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    document.body.appendChild(
+      link
+    );
 
-    URL.revokeObjectURL(url);
+    link.click();
+
+    document.body.removeChild(
+      link
+    );
+
+    URL.revokeObjectURL(
+      url
+    );
 
     setSuccess(
       `${filteredEmployees.length} employee records exported to CSV.`
     );
   }
 
-  // ------------------------------------------------------------
-  // CLEAR FILTERS
-  // ------------------------------------------------------------
+  /* ============================================================
+     CLEAR FILTERS
+  ============================================================ */
 
   function clearFilters() {
     setSearch("");
@@ -726,69 +1089,82 @@ export default function EmployeesPage() {
     setStatusFilter("");
   }
 
-  const activeFilterCount = [
-    departmentFilter,
-    designationFilter,
-    typeFilter,
-    genderFilter,
-    vendorFilter,
-    customerFilter,
-    statusFilter,
-  ].filter(Boolean).length;
+  const activeFilterCount =
+    [
+      departmentFilter,
+      designationFilter,
+      typeFilter,
+      genderFilter,
+      vendorFilter,
+      customerFilter,
+      statusFilter,
+    ].filter(Boolean).length;
 
-  // ------------------------------------------------------------
-  // BULK PARSE
-  // ------------------------------------------------------------
+  /* ============================================================
+     BULK PARSE
+  ============================================================ */
 
-  const applyBulkParse = useCallback(
-    (
-      text: string,
-      mode: ModalMode
-    ) => {
-      if (!text.trim()) {
-        setBulkRows([]);
-        return;
-      }
+  const applyBulkParse =
+    useCallback(
+      (
+        text: string,
+        mode: ModalMode
+      ) => {
+        if (!text.trim()) {
+          setBulkRows([]);
+          return;
+        }
 
-      let parsed =
-        parseBulkText(text);
+        let parsed =
+          parseBulkText(text);
 
-      if (mode === "bulk_edit") {
-        const byCode =
-          new Map(
-            employees.map((e) => [
-              e.employee_code.toUpperCase(),
-              e,
-            ])
-          );
-
-        parsed = parsed.map((row) => {
-          const existing =
-            byCode.get(
-              row.employee_code
+        if (
+          mode ===
+          "bulk_edit"
+        ) {
+          const byCode =
+            new Map(
+              employees.map(
+                (e) => [
+                  e.employee_code.toUpperCase(),
+                  e,
+                ]
+              )
             );
 
-          if (!existing) {
-            return {
-              ...row,
-              error: row.error
-                ? `${row.error}; Not found for edit`
-                : "Employee ID not found (cannot edit)",
-            };
-          }
+          parsed =
+            parsed.map(
+              (row) => {
+                const existing =
+                  byCode.get(
+                    row.employee_code
+                  );
 
-          return {
-            ...row,
-            _existingId:
-              existing.id,
-          };
-        });
-      }
+                if (!existing) {
+                  return {
+                    ...row,
+                    error:
+                      row.error
+                        ? `${row.error}; Not found for edit`
+                        : "Employee ID not found (cannot edit)",
+                  };
+                }
 
-      setBulkRows(parsed);
-    },
-    [employees]
-  );
+                return {
+                  ...row,
+                  _existingId:
+                    existing.id,
+                };
+              }
+            );
+        }
+
+        setBulkRows(
+          parsed
+        );
+      },
+      [employees]
+    );
 
   function handleBulkTextChange(
     value: string
@@ -824,9 +1200,9 @@ export default function EmployeesPage() {
     bulkRows.length -
     validBulkCount;
 
-  // ------------------------------------------------------------
-  // MODALS
-  // ------------------------------------------------------------
+  /* ============================================================
+     MODALS
+  ============================================================ */
 
   function openAddModal() {
     setEditingEmployee(null);
@@ -839,7 +1215,10 @@ export default function EmployeesPage() {
           .slice(0, 10),
     });
 
-    setModalMode("single");
+    setModalMode(
+      "single"
+    );
+
     setBulkText("");
     setBulkRows([]);
     setError("");
@@ -850,7 +1229,9 @@ export default function EmployeesPage() {
   function openBulkAdd() {
     setEditingEmployee(null);
     setForm(EMPTY_FORM);
-    setModalMode("bulk_add");
+    setModalMode(
+      "bulk_add"
+    );
     setBulkText("");
     setBulkRows([]);
     setError("");
@@ -861,7 +1242,9 @@ export default function EmployeesPage() {
   function openBulkEdit() {
     setEditingEmployee(null);
     setForm(EMPTY_FORM);
-    setModalMode("bulk_edit");
+    setModalMode(
+      "bulk_edit"
+    );
     setBulkText("");
     setBulkRows([]);
     setError("");
@@ -872,7 +1255,9 @@ export default function EmployeesPage() {
   function openEditModal(
     employee: Employee
   ) {
-    setEditingEmployee(employee);
+    setEditingEmployee(
+      employee
+    );
 
     setForm({
       employee_code:
@@ -882,24 +1267,34 @@ export default function EmployeesPage() {
       full_name:
         employee.full_name,
       department:
-        employee.department || "",
+        employee.department ||
+        "",
       designation:
-        employee.designation || "",
+        employee.designation ||
+        "",
       employment_type:
         employee.employment_type ||
         "UNSKILLED",
       gender:
-        employee.gender || "",
+        employee.gender ||
+        "",
       vendor:
-        employee.vendor || "",
+        normalizeVendor(
+          employee.vendor ||
+            ""
+        ),
       customer_account:
         employee.customer_account ||
         "",
       joining_date:
-        employee.joining_date || "",
+        employee.joining_date ||
+        "",
     });
 
-    setModalMode("single");
+    setModalMode(
+      "single"
+    );
+
     setBulkText("");
     setBulkRows([]);
     setError("");
@@ -908,32 +1303,42 @@ export default function EmployeesPage() {
   }
 
   function closeModal() {
-    if (saving) return;
+    if (saving) {
+      return;
+    }
 
     setShowModal(false);
-    setEditingEmployee(null);
+    setEditingEmployee(
+      null
+    );
     setForm(EMPTY_FORM);
-    setModalMode("single");
+    setModalMode(
+      "single"
+    );
     setBulkText("");
     setBulkRows([]);
     setError("");
     setShowConfirm(false);
-    setPendingBulkAction(null);
+    setPendingBulkAction(
+      null
+    );
   }
 
   function updateForm(
     field: keyof EmployeeForm,
     value: string
   ) {
-    setForm((current) => ({
-      ...current,
-      [field]: value,
-    }));
+    setForm(
+      (current) => ({
+        ...current,
+        [field]: value,
+      })
+    );
   }
 
-  // ------------------------------------------------------------
-  // BULK SUBMIT
-  // ------------------------------------------------------------
+  /* ============================================================
+     BULK SUBMIT REQUEST
+  ============================================================ */
 
   function requestBulkSubmit() {
     if (!isAdmin) {
@@ -943,9 +1348,13 @@ export default function EmployeesPage() {
       return;
     }
 
-    if (validBulkCount === 0) {
+    if (
+      validBulkCount ===
+      0
+    ) {
       setError(
-        modalMode === "bulk_edit"
+        modalMode ===
+          "bulk_edit"
           ? "No valid rows to update."
           : "No valid rows to import."
       );
@@ -953,16 +1362,25 @@ export default function EmployeesPage() {
     }
 
     setPendingBulkAction(
-      modalMode === "bulk_edit"
+      modalMode ===
+        "bulk_edit"
         ? "edit"
         : "add"
     );
 
-    setShowConfirm(true);
+    setShowConfirm(
+      true
+    );
   }
 
+  /* ============================================================
+     EXECUTE BULK
+  ============================================================ */
+
   async function executeBulk() {
-    if (!pendingBulkAction) {
+    if (
+      !pendingBulkAction
+    ) {
       return;
     }
 
@@ -970,11 +1388,18 @@ export default function EmployeesPage() {
       setError(
         "Only admins can perform bulk operations."
       );
-      setShowConfirm(false);
+
+      setShowConfirm(
+        false
+      );
+
       return;
     }
 
-    setShowConfirm(false);
+    setShowConfirm(
+      false
+    );
+
     setSaving(true);
     setError("");
     setSuccess("");
@@ -985,44 +1410,61 @@ export default function EmployeesPage() {
       );
 
     try {
+      /* --------------------------------------------------------
+         BULK ADD
+      -------------------------------------------------------- */
+
       if (
-        pendingBulkAction === "add"
+        pendingBulkAction ===
+        "add"
       ) {
         const payload =
-          validRows.map((row) => ({
-            employee_code:
-              row.employee_code,
-            barcode:
-              row.barcode,
-            full_name:
-              row.full_name,
-            department:
-              row.department.trim() ||
-              null,
-            designation:
-              row.designation.trim() ||
-              null,
-            employment_type:
-              row.employment_type,
-            gender:
-              row.gender || null,
-            vendor:
-              row.vendor.trim() ||
-              null,
-            customer_account:
-              row.customer_account.trim() ||
-              null,
-            joining_date:
-              row.joining_date ||
-              null,
-            is_active: true,
-          }));
+          validRows.map(
+            (row) => ({
+              employee_code:
+                row.employee_code,
+              barcode:
+                row.barcode,
+              full_name:
+                row.full_name,
+              department:
+                row.department.trim() ||
+                null,
+              designation:
+                row.designation.trim() ||
+                null,
+              employment_type:
+                row.employment_type,
+              gender:
+                row.gender ||
+                null,
+
+              /*
+               * Always normalize before DB save.
+               */
+              vendor:
+                normalizeVendor(
+                  row.vendor
+                ) || null,
+
+              customer_account:
+                row.customer_account.trim() ||
+                null,
+              joining_date:
+                row.joining_date ||
+                null,
+              is_active: true,
+            })
+          );
 
         const {
-          error: insertError,
+          error:
+            insertError,
         } = await supabase
           .from("employees")
-          .insert(payload);
+          .insert(
+            payload
+          );
 
         if (insertError) {
           if (
@@ -1040,23 +1482,35 @@ export default function EmployeesPage() {
         }
 
         setSuccess(
-          invalidBulkCount > 0
+          invalidBulkCount >
+            0
             ? `${validRows.length} employees added. ${invalidBulkCount} skipped.`
             : `${validRows.length} employees added successfully.`
         );
-      } else {
+      }
+
+      /* --------------------------------------------------------
+         BULK EDIT
+      -------------------------------------------------------- */
+
+      else {
         let updated = 0;
 
         const failMessages: string[] =
           [];
 
-        for (const row of validRows) {
-          if (!row._existingId) {
+        for (
+          const row of validRows
+        ) {
+          if (
+            !row._existingId
+          ) {
             continue;
           }
 
           const {
-            error: updateError,
+            error:
+              updateError,
           } = await supabase
             .from("employees")
             .update({
@@ -1073,10 +1527,17 @@ export default function EmployeesPage() {
               employment_type:
                 row.employment_type,
               gender:
-                row.gender || null,
-              vendor:
-                row.vendor.trim() ||
+                row.gender ||
                 null,
+
+              /*
+               * Always normalize before DB save.
+               */
+              vendor:
+                normalizeVendor(
+                  row.vendor
+                ) || null,
+
               customer_account:
                 row.customer_account.trim() ||
                 null,
@@ -1109,6 +1570,7 @@ export default function EmployeesPage() {
               .slice(0, 3)
               .join("; ")
           );
+
           return;
         }
 
@@ -1119,11 +1581,17 @@ export default function EmployeesPage() {
         );
       }
 
-      setShowModal(false);
+      setShowModal(
+        false
+      );
+
       setBulkText("");
       setBulkRows([]);
       setForm(EMPTY_FORM);
-      setPendingBulkAction(null);
+
+      setPendingBulkAction(
+        null
+      );
 
       await loadEmployees();
     } catch (err: any) {
@@ -1141,9 +1609,9 @@ export default function EmployeesPage() {
     }
   }
 
-  // ------------------------------------------------------------
-  // SINGLE SUBMIT
-  // ------------------------------------------------------------
+  /* ============================================================
+     SINGLE SUBMIT
+  ============================================================ */
 
   async function handleSubmit(
     event: FormEvent<HTMLFormElement>
@@ -1155,8 +1623,10 @@ export default function EmployeesPage() {
 
     if (
       (
-        modalMode === "bulk_add" ||
-        modalMode === "bulk_edit"
+        modalMode ===
+          "bulk_add" ||
+        modalMode ===
+          "bulk_edit"
       ) &&
       !editingEmployee
     ) {
@@ -1202,33 +1672,51 @@ export default function EmployeesPage() {
       const payload = {
         employee_code:
           employeeCode,
+
         barcode,
+
         full_name:
           fullName,
+
         department:
           form.department.trim() ||
           null,
+
         designation:
           form.designation.trim() ||
           null,
+
         employment_type:
           form.employment_type,
+
         gender:
           form.gender || null,
+
+        /*
+         * Normalize vendor before saving.
+         */
         vendor:
-          form.vendor.trim() ||
-          null,
+          normalizeVendor(
+            form.vendor
+          ) || null,
+
         customer_account:
           form.customer_account.trim() ||
           null,
+
         joining_date:
           form.joining_date ||
           null,
       };
 
+      /* --------------------------------------------------------
+         UPDATE
+      -------------------------------------------------------- */
+
       if (editingEmployee) {
         const {
-          error: updateError,
+          error:
+            updateError,
         } = await supabase
           .from("employees")
           .update({
@@ -1248,9 +1736,16 @@ export default function EmployeesPage() {
         setSuccess(
           "Employee updated successfully."
         );
-      } else {
+      }
+
+      /* --------------------------------------------------------
+         INSERT
+      -------------------------------------------------------- */
+
+      else {
         const {
-          error: insertError,
+          error:
+            insertError,
         } = await supabase
           .from("employees")
           .insert({
@@ -1278,8 +1773,14 @@ export default function EmployeesPage() {
         );
       }
 
-      setShowModal(false);
-      setEditingEmployee(null);
+      setShowModal(
+        false
+      );
+
+      setEditingEmployee(
+        null
+      );
+
       setForm(EMPTY_FORM);
 
       await loadEmployees();
@@ -1295,9 +1796,9 @@ export default function EmployeesPage() {
     }
   }
 
-  // ------------------------------------------------------------
-  // ACTIVATE / DEACTIVATE
-  // ------------------------------------------------------------
+  /* ============================================================
+     ACTIVATE / DEACTIVATE
+  ============================================================ */
 
   async function toggleEmployee(
     employee: Employee
@@ -1319,7 +1820,8 @@ export default function EmployeesPage() {
     }
 
     const {
-      error: updateError,
+      error:
+        updateError,
     } = await supabase
       .from("employees")
       .update({
@@ -1349,9 +1851,9 @@ export default function EmployeesPage() {
     await loadEmployees();
   }
 
-  // ------------------------------------------------------------
-  // UI
-  // ------------------------------------------------------------
+  /* ============================================================
+     UI
+  ============================================================ */
 
   return (
     <main className="min-h-screen bg-slate-100 px-3 py-4 md:px-5">
@@ -1359,8 +1861,12 @@ export default function EmployeesPage() {
 
         <MainMenu />
 
-        {/* HEADER */}
+        {/* ======================================================
+            HEADER
+        ====================================================== */}
+
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+
           <div>
             <h1 className="text-lg font-bold text-slate-800">
               Employee Management
@@ -1368,6 +1874,7 @@ export default function EmployeesPage() {
 
             <p className="mt-0.5 text-[11px] text-slate-500">
               Manage skilled, semi-skilled and unskilled employees.
+
               {!isAdmin && (
                 <span className="ml-1 text-amber-600">
                   (Bulk requires admin role)
@@ -1382,7 +1889,8 @@ export default function EmployeesPage() {
               type="button"
               onClick={() =>
                 setShowFilters(
-                  (value) => !value
+                  (value) =>
+                    !value
                 )
               }
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
@@ -1394,7 +1902,9 @@ export default function EmployeesPage() {
 
             <button
               type="button"
-              onClick={downloadCSV}
+              onClick={
+                downloadCSV
+              }
               className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
             >
               ↓ Download CSV
@@ -1402,7 +1912,9 @@ export default function EmployeesPage() {
 
             <button
               type="button"
-              onClick={openBulkAdd}
+              onClick={
+                openBulkAdd
+              }
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
             >
               Bulk Add
@@ -1410,7 +1922,9 @@ export default function EmployeesPage() {
 
             <button
               type="button"
-              onClick={openBulkEdit}
+              onClick={
+                openBulkEdit
+              }
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
             >
               Bulk Edit
@@ -1418,20 +1932,27 @@ export default function EmployeesPage() {
 
             <button
               type="button"
-              onClick={openAddModal}
+              onClick={
+                openAddModal
+              }
               className="rounded-md bg-slate-800 px-3.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-700"
             >
               + Add Employee
             </button>
+
           </div>
         </div>
 
-        {/* SEARCH + FILTERS */}
+        {/* ======================================================
+            SEARCH + FILTERS
+        ====================================================== */}
+
         <div className="mb-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
 
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 
             <div className="relative w-full sm:max-w-sm">
+
               <input
                 type="text"
                 value={search}
@@ -1455,6 +1976,7 @@ export default function EmployeesPage() {
                   ×
                 </button>
               )}
+
             </div>
 
             <div className="flex items-center gap-3 text-[11px]">
@@ -1463,11 +1985,13 @@ export default function EmployeesPage() {
                 <span className="text-slate-400">
                   Showing
                 </span>{" "}
+
                 <strong className="text-slate-700">
                   {
                     filteredEmployees.length
                   }
                 </strong>
+
                 <span className="text-slate-400">
                   {" "}
                   / {employees.length}
@@ -1478,6 +2002,7 @@ export default function EmployeesPage() {
                 <span className="text-slate-400">
                   Active
                 </span>{" "}
+
                 <strong className="text-green-600">
                   {
                     employees.filter(
@@ -1492,6 +2017,7 @@ export default function EmployeesPage() {
                 <span className="text-slate-400">
                   Inactive
                 </span>{" "}
+
                 <strong className="text-red-600">
                   {
                     employees.filter(
@@ -1501,6 +2027,7 @@ export default function EmployeesPage() {
                   }
                 </strong>
               </div>
+
             </div>
           </div>
 
@@ -1509,9 +2036,12 @@ export default function EmployeesPage() {
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7">
 
-                {/* Department */}
+                {/* DEPARTMENT */}
+
                 <select
-                  value={departmentFilter}
+                  value={
+                    departmentFilter
+                  }
                   onChange={(e) =>
                     setDepartmentFilter(
                       e.target.value
@@ -1526,8 +2056,13 @@ export default function EmployeesPage() {
                   {departments.map(
                     (department) => (
                       <option
-                        key={department}
-                        value={department || ""}
+                        key={
+                          department
+                        }
+                        value={
+                          department ||
+                          ""
+                        }
                       >
                         {department}
                       </option>
@@ -1535,9 +2070,12 @@ export default function EmployeesPage() {
                   )}
                 </select>
 
-                {/* Designation */}
+                {/* DESIGNATION */}
+
                 <select
-                  value={designationFilter}
+                  value={
+                    designationFilter
+                  }
                   onChange={(e) =>
                     setDesignationFilter(
                       e.target.value
@@ -1552,8 +2090,13 @@ export default function EmployeesPage() {
                   {designations.map(
                     (designation) => (
                       <option
-                        key={designation}
-                        value={designation || ""}
+                        key={
+                          designation
+                        }
+                        value={
+                          designation ||
+                          ""
+                        }
                       >
                         {designation}
                       </option>
@@ -1561,9 +2104,12 @@ export default function EmployeesPage() {
                   )}
                 </select>
 
-                {/* Type */}
+                {/* TYPE */}
+
                 <select
-                  value={typeFilter}
+                  value={
+                    typeFilter
+                  }
                   onChange={(e) =>
                     setTypeFilter(
                       e.target.value
@@ -1574,20 +2120,26 @@ export default function EmployeesPage() {
                   <option value="">
                     All Types
                   </option>
+
                   <option value="SKILLED">
                     Skilled
                   </option>
+
                   <option value="SEMI_SKILLED">
                     Semi-Skilled
                   </option>
+
                   <option value="UNSKILLED">
                     Unskilled
                   </option>
                 </select>
 
-                {/* Gender */}
+                {/* GENDER */}
+
                 <select
-                  value={genderFilter}
+                  value={
+                    genderFilter
+                  }
                   onChange={(e) =>
                     setGenderFilter(
                       e.target.value
@@ -1598,20 +2150,26 @@ export default function EmployeesPage() {
                   <option value="">
                     All Genders
                   </option>
+
                   <option value="Male">
                     Male
                   </option>
+
                   <option value="Female">
                     Female
                   </option>
+
                   <option value="Other">
                     Other
                   </option>
                 </select>
 
-                {/* Vendor */}
+                {/* VENDOR */}
+
                 <select
-                  value={vendorFilter}
+                  value={
+                    vendorFilter
+                  }
                   onChange={(e) =>
                     setVendorFilter(
                       e.target.value
@@ -1627,17 +2185,28 @@ export default function EmployeesPage() {
                     (vendor) => (
                       <option
                         key={vendor}
-                        value={vendor || ""}
+                        value={vendor}
                       >
                         {vendor}
                       </option>
                     )
                   )}
+
+                  <option
+                    value={
+                      NO_VENDOR_VALUE
+                    }
+                  >
+                    No Vendor Mapped
+                  </option>
                 </select>
 
-                {/* Customer Account */}
+                {/* CUSTOMER ACCOUNT */}
+
                 <select
-                  value={customerFilter}
+                  value={
+                    customerFilter
+                  }
                   onChange={(e) =>
                     setCustomerFilter(
                       e.target.value
@@ -1653,7 +2222,10 @@ export default function EmployeesPage() {
                     (account) => (
                       <option
                         key={account}
-                        value={account || ""}
+                        value={
+                          account ||
+                          ""
+                        }
                       >
                         {account}
                       </option>
@@ -1661,9 +2233,12 @@ export default function EmployeesPage() {
                   )}
                 </select>
 
-                {/* Status */}
+                {/* STATUS */}
+
                 <select
-                  value={statusFilter}
+                  value={
+                    statusFilter
+                  }
                   onChange={(e) =>
                     setStatusFilter(
                       e.target.value
@@ -1674,42 +2249,57 @@ export default function EmployeesPage() {
                   <option value="">
                     All Status
                   </option>
+
                   <option value="active">
                     Active
                   </option>
+
                   <option value="inactive">
                     Inactive
                   </option>
                 </select>
+
               </div>
 
               <div className="mt-2 flex items-center justify-between">
 
                 <div className="text-[10px] text-slate-400">
-                  {activeFilterCount > 0
-                    ? `${activeFilterCount} filter${activeFilterCount === 1 ? "" : "s"} applied`
+                  {activeFilterCount >
+                  0
+                    ? `${activeFilterCount} filter${
+                        activeFilterCount ===
+                        1
+                          ? ""
+                          : "s"
+                      } applied`
                     : "No column filters applied"}
                 </div>
 
                 <button
                   type="button"
-                  onClick={clearFilters}
+                  onClick={
+                    clearFilters
+                  }
                   className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50"
                 >
                   Clear Filters
                 </button>
+
               </div>
             </div>
           )}
         </div>
 
-        {/* MESSAGES */}
+        {/* ======================================================
+            MESSAGES
+        ====================================================== */}
 
-        {error && !showModal && (
-          <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-            {error}
-          </div>
-        )}
+        {error &&
+          !showModal && (
+            <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {error}
+            </div>
+          )}
 
         {success && (
           <div className="mb-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700">
@@ -1717,7 +2307,9 @@ export default function EmployeesPage() {
           </div>
         )}
 
-        {/* TABLE */}
+        {/* ======================================================
+            TABLE
+        ====================================================== */}
 
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
 
@@ -1739,18 +2331,23 @@ export default function EmployeesPage() {
                     "Customer Account",
                     "Status",
                     "Action",
-                  ].map((heading) => (
-                    <th
-                      key={heading}
-                      className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 ${
-                        heading === "Action"
-                          ? "text-right"
-                          : "text-left"
-                      }`}
-                    >
-                      {heading}
-                    </th>
-                  ))}
+                  ].map(
+                    (heading) => (
+                      <th
+                        key={
+                          heading
+                        }
+                        className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 ${
+                          heading ===
+                          "Action"
+                            ? "text-right"
+                            : "text-left"
+                        }`}
+                      >
+                        {heading}
+                      </th>
+                    )
+                  )}
 
                 </tr>
               </thead>
@@ -1780,9 +2377,13 @@ export default function EmployeesPage() {
                   filteredEmployees.map(
                     (employee) => (
                       <tr
-                        key={employee.id}
+                        key={
+                          employee.id
+                        }
                         className="border-b border-slate-100 last:border-0 hover:bg-slate-50/80"
                       >
+
+                        {/* EMPLOYEE */}
 
                         <td className="px-3 py-2">
                           <div className="font-medium text-slate-800">
@@ -1798,6 +2399,8 @@ export default function EmployeesPage() {
                           </div>
                         </td>
 
+                        {/* BARCODE */}
+
                         <td className="px-3 py-2">
                           <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700">
                             {
@@ -1806,12 +2409,16 @@ export default function EmployeesPage() {
                           </span>
                         </td>
 
+                        {/* GENDER */}
+
                         <td className="px-3 py-2 text-slate-600">
                           {
                             employee.gender ||
                             "—"
                           }
                         </td>
+
+                        {/* DEPARTMENT */}
 
                         <td className="px-3 py-2 text-slate-600">
                           {
@@ -1820,6 +2427,8 @@ export default function EmployeesPage() {
                           }
                         </td>
 
+                        {/* DESIGNATION */}
+
                         <td className="px-3 py-2 text-slate-600">
                           {
                             employee.designation ||
@@ -1827,7 +2436,10 @@ export default function EmployeesPage() {
                           }
                         </td>
 
+                        {/* TYPE */}
+
                         <td className="px-3 py-2">
+
                           <span
                             className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                               employee.employment_type ===
@@ -1843,14 +2455,26 @@ export default function EmployeesPage() {
                               employee.employment_type
                             )}
                           </span>
+
                         </td>
 
+                        {/* VENDOR */}
+
                         <td className="px-3 py-2 text-slate-600">
-                          {
-                            employee.vendor ||
-                            "—"
-                          }
+
+                          {employee.vendor ? (
+                            normalizeVendor(
+                              employee.vendor
+                            )
+                          ) : (
+                            <span className="text-slate-400">
+                              —
+                            </span>
+                          )}
+
                         </td>
+
+                        {/* CUSTOMER ACCOUNT */}
 
                         <td className="px-3 py-2 text-slate-600">
                           {
@@ -1859,19 +2483,31 @@ export default function EmployeesPage() {
                           }
                         </td>
 
+                        {/* STATUS */}
+
                         <td className="px-3 py-2">
+
                           {employee.is_active ? (
                             <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-semibold text-green-700">
+
                               <span className="h-1 w-1 rounded-full bg-green-500" />
+
                               Active
+
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600">
+
                               <span className="h-1 w-1 rounded-full bg-red-500" />
+
                               Inactive
+
                             </span>
                           )}
+
                         </td>
+
+                        {/* ACTION */}
 
                         <td className="px-3 py-2 text-right">
 
@@ -1910,19 +2546,22 @@ export default function EmployeesPage() {
                           </div>
 
                         </td>
+
                       </tr>
                     )
                   )
                 )}
 
               </tbody>
+
             </table>
+
           </div>
         </div>
 
-        {/* ============================================================
+        {/* ======================================================
             MODAL
-        ============================================================ */}
+        ====================================================== */}
 
         {showModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 p-3">
@@ -1934,6 +2573,7 @@ export default function EmployeesPage() {
               <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
 
                 <div>
+
                   <h2 className="text-sm font-semibold text-slate-800">
 
                     {editingEmployee
@@ -1961,12 +2601,15 @@ export default function EmployeesPage() {
                           : "Add a new employee."}
 
                   </p>
+
                 </div>
 
                 <button
                   type="button"
                   disabled={saving}
-                  onClick={closeModal}
+                  onClick={
+                    closeModal
+                  }
                   className="rounded px-2 py-0.5 text-lg text-slate-400 hover:bg-slate-100"
                 >
                   ×
@@ -1995,9 +2638,14 @@ export default function EmployeesPage() {
                       ],
                     ] as const
                   ).map(
-                    ([mode, label]) => (
+                    ([
+                      mode,
+                      label,
+                    ]) => (
                       <button
-                        key={mode}
+                        key={
+                          mode
+                        }
                         type="button"
                         onClick={() =>
                           switchModalMode(
@@ -2011,7 +2659,9 @@ export default function EmployeesPage() {
                             : "text-slate-500 hover:text-slate-700"
                         }`}
                       >
-                        {label}
+                        {
+                          label
+                        }
                       </button>
                     )
                   )}
@@ -2020,22 +2670,27 @@ export default function EmployeesPage() {
               )}
 
               <form
-                onSubmit={handleSubmit}
+                onSubmit={
+                  handleSubmit
+                }
                 className="flex min-h-0 flex-1 flex-col"
               >
 
                 <div className="flex-1 overflow-y-auto p-4">
 
-                  {/* SINGLE */}
+                  {/* ==================================================
+                      SINGLE FORM
+                  ================================================== */}
 
                   {(modalMode ===
                     "single" ||
                     editingEmployee) && (
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 
-                      {/* Employee ID */}
+                      {/* EMPLOYEE ID */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Employee ID *
                         </label>
@@ -2055,11 +2710,13 @@ export default function EmployeesPage() {
                           disabled={saving}
                           className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-mono uppercase outline-none focus:border-slate-500"
                         />
+
                       </div>
 
-                      {/* Barcode */}
+                      {/* BARCODE */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Barcode *
                         </label>
@@ -2079,11 +2736,13 @@ export default function EmployeesPage() {
                           disabled={saving}
                           className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-mono outline-none focus:border-slate-500"
                         />
+
                       </div>
 
                       {/* NAME */}
 
                       <div className="sm:col-span-2">
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Full Name *
                         </label>
@@ -2103,11 +2762,13 @@ export default function EmployeesPage() {
                           disabled={saving}
                           className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-slate-500"
                         />
+
                       </div>
 
                       {/* GENDER */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Gender
                         </label>
@@ -2128,21 +2789,27 @@ export default function EmployeesPage() {
                           <option value="">
                             Select Gender
                           </option>
+
                           <option value="Male">
                             Male
                           </option>
+
                           <option value="Female">
                             Female
                           </option>
+
                           <option value="Other">
                             Other
                           </option>
+
                         </select>
+
                       </div>
 
                       {/* SKILL TYPE */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Skill Type
                         </label>
@@ -2171,12 +2838,15 @@ export default function EmployeesPage() {
                           <option value="UNSKILLED">
                             Unskilled
                           </option>
+
                         </select>
+
                       </div>
 
                       {/* DEPARTMENT */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Department
                         </label>
@@ -2196,11 +2866,13 @@ export default function EmployeesPage() {
                           disabled={saving}
                           className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none"
                         />
+
                       </div>
 
                       {/* DESIGNATION */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Designation
                         </label>
@@ -2220,11 +2892,15 @@ export default function EmployeesPage() {
                           disabled={saving}
                           className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none"
                         />
+
                       </div>
 
-                      {/* VENDOR DROPDOWN */}
+                      {/* ==================================================
+                          VENDOR
+                      ================================================== */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Vendor
                         </label>
@@ -2243,25 +2919,34 @@ export default function EmployeesPage() {
                           className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs outline-none"
                         >
                           <option value="">
-                            Select Vendor
+                            No Vendor Mapped
                           </option>
 
                           {VENDORS.map(
                             (vendor) => (
                               <option
-                                key={vendor}
-                                value={vendor}
+                                key={
+                                  vendor
+                                }
+                                value={
+                                  vendor
+                                }
                               >
-                                {vendor}
+                                {
+                                  vendor
+                                }
                               </option>
                             )
                           )}
+
                         </select>
+
                       </div>
 
-                      {/* CUSTOMER ACCOUNT DROPDOWN */}
+                      {/* CUSTOMER ACCOUNT */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Customer Account
                         </label>
@@ -2286,19 +2971,28 @@ export default function EmployeesPage() {
                           {CUSTOMER_ACCOUNTS.map(
                             (account) => (
                               <option
-                                key={account}
-                                value={account}
+                                key={
+                                  account
+                                }
+                                value={
+                                  account
+                                }
                               >
-                                {account}
+                                {
+                                  account
+                                }
                               </option>
                             )
                           )}
+
                         </select>
+
                       </div>
 
                       {/* JOINING DATE */}
 
                       <div>
+
                         <label className="mb-1 block text-[10px] font-semibold text-slate-600">
                           Joining Date
                         </label>
@@ -2317,12 +3011,15 @@ export default function EmployeesPage() {
                           disabled={saving}
                           className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none"
                         />
+
                       </div>
 
                     </div>
                   )}
 
-                  {/* BULK */}
+                  {/* ==================================================
+                      BULK
+                  ================================================== */}
 
                   {(modalMode ===
                     "bulk_add" ||
@@ -2355,10 +3052,16 @@ export default function EmployeesPage() {
                             Associate automatically becomes Semi-Skilled.
                           </p>
 
+                          <p className="mt-1 text-[10px] text-slate-500">
+                            Vendor names such as FUTURZ, FUTUREZ and Furturz are automatically saved as Futurz.
+                          </p>
+
                         </div>
 
                         <textarea
-                          value={bulkText}
+                          value={
+                            bulkText
+                          }
                           onChange={(e) =>
                             handleBulkTextChange(
                               e.target.value
@@ -2412,7 +3115,9 @@ export default function EmployeesPage() {
                               <table className="w-full min-w-[800px] border-collapse text-left text-[10px]">
 
                                 <thead className="sticky top-0 bg-slate-100">
+
                                   <tr>
+
                                     {[
                                       "#",
                                       "Emp ID",
@@ -2437,7 +3142,9 @@ export default function EmployeesPage() {
                                         </th>
                                       )
                                     )}
+
                                   </tr>
+
                                 </thead>
 
                                 <tbody>
@@ -2459,8 +3166,10 @@ export default function EmployeesPage() {
                                       >
 
                                         <td className="px-1.5 py-1 text-slate-400">
-                                          {index +
-                                            1}
+                                          {
+                                            index +
+                                            1
+                                          }
                                         </td>
 
                                         <td className="px-1.5 py-1 font-medium">
@@ -2482,10 +3191,8 @@ export default function EmployeesPage() {
                                         </td>
 
                                         <td className="px-1.5 py-1">
-                                          {
-                                            row.vendor ||
-                                            "—"
-                                          }
+                                          {row.vendor ||
+                                            "—"}
                                         </td>
 
                                         <td className="px-1.5 py-1">
@@ -2516,13 +3223,18 @@ export default function EmployeesPage() {
                                   )}
 
                                 </tbody>
+
                               </table>
+
                             </div>
+
                           </div>
                         )}
 
                       </div>
                     )}
+
+                  {/* FORM ERROR */}
 
                   {error && (
                     <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-700">
@@ -2532,14 +3244,18 @@ export default function EmployeesPage() {
 
                 </div>
 
-                {/* FOOTER */}
+                {/* ==================================================
+                    FOOTER
+                ================================================== */}
 
                 <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-2.5">
 
                   <button
                     type="button"
                     disabled={saving}
-                    onClick={closeModal}
+                    onClick={
+                      closeModal
+                    }
                     className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
                   >
                     Cancel
@@ -2595,11 +3311,14 @@ export default function EmployeesPage() {
                 </div>
 
               </form>
+
             </div>
           </div>
         )}
 
-        {/* CONFIRM */}
+        {/* ======================================================
+            CONFIRM BULK
+        ====================================================== */}
 
         {showConfirm &&
           pendingBulkAction && (
@@ -2626,11 +3345,16 @@ export default function EmployeesPage() {
                         ? "update"
                         : "create"
                     }{" "}
-                    {validBulkCount} employee
-                    {validBulkCount ===
-                    1
-                      ? ""
-                      : "s"}
+                    {
+                      validBulkCount
+                    }{" "}
+                    employee
+                    {
+                      validBulkCount ===
+                      1
+                        ? ""
+                        : "s"
+                    }
                   </strong>
                   .
                 </p>
@@ -2644,6 +3368,7 @@ export default function EmployeesPage() {
                       setShowConfirm(
                         false
                       );
+
                       setPendingBulkAction(
                         null
                       );
@@ -2670,7 +3395,9 @@ export default function EmployeesPage() {
                   </button>
 
                 </div>
+
               </div>
+
             </div>
           )}
 
