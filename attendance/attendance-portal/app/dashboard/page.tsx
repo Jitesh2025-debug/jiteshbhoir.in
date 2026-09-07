@@ -101,15 +101,12 @@ export default function Dashboard() {
   const [genderStats, setGenderStats] = useState({ male: 0, female: 0, other: 0 });
   const [vendorStats, setVendorStats] = useState<VendorStat[]>([]);
   const [skillStats, setSkillStats] = useState<SkillStat>({ skilled: 0, semi: 0, unskilled: 0 });
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return localStorage.getItem("theme") !== "light";
+  });
 
   const today = todayIST();
-
-  useEffect(() => {
-    const saved = localStorage.getItem("theme");
-    if (saved === "light") setDarkMode(false);
-    else setDarkMode(true);
-  }, []);
 
   useEffect(() => {
     if (darkMode) {

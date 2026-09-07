@@ -616,14 +616,13 @@ function ScanContent() {
         | Shift
         | null = null;
 
-      /* -------------------------------------------------------------------- */
-      /* TODAY'S ROSTER                                                        */
-      /* -------------------------------------------------------------------- */
+      const previousDate = getPreviousDateIST(calendarToday);
+      const isEarlyMorning = currentMinutes < 6 * 60;
+      const rosterDates = isEarlyMorning
+        ? [previousDate, calendarToday]
+        : [calendarToday];
 
-      const {
-        data: rosterToday,
-        error: rosterTodayError,
-      } = await supabase
+      const { data: rosterRows, error: rosterError } = await supabase
         .from("rosters")
         .select(
           `
@@ -634,99 +633,46 @@ function ScanContent() {
           shift_id
         `
         )
-        .eq(
-          "employee_id",
-          employee.id
-        )
-        .eq(
-          "roster_date",
-          calendarToday
-        )
-        .maybeSingle();
+        .eq("employee_id", employee.id)
+        .in("roster_date", rosterDates);
 
-      if (rosterTodayError) {
-        console.warn(
-          "Today's roster error:",
-          rosterTodayError
-        );
+      if (rosterError) {
+        throw rosterError;
       }
 
-      if (rosterToday) {
-        roster =
-          rosterToday as RosterRow;
-      }
+      const rosterByDate = new Map(
+        (rosterRows || []).map((row) => [row.roster_date, row as RosterRow])
+      );
+      const previousRoster = rosterByDate.get(previousDate) || null;
+      const todayRoster = rosterByDate.get(calendarToday) || null;
 
-      /* -------------------------------------------------------------------- */
-      /* YESTERDAY'S ROSTER                                                    */
-      /* -------------------------------------------------------------------- */
-
-      /*
-       * If we are after midnight and today's roster isn't
-       * found, look at yesterday.
-       *
-       * This is what allows:
-       *
-       * Sep 7 02:00
-       *
-       * to find:
-       *
-       * Sep 6 19:00 -> Sep 7 04:00
-       */
-      if (
-        !roster &&
-        currentMinutes <
-          6 * 60
-      ) {
-        const yesterday =
-          getPreviousDateIST(
-            calendarToday
-          );
-
-        const {
-          data: rosterYesterday,
-          error:
-            rosterYesterdayError,
-        } = await supabase
-          .from("rosters")
-          .select(
-            `
-            id,
-            employee_id,
-            roster_date,
-            roster_status,
-            shift_id
-          `
-          )
-          .eq(
-            "employee_id",
-            employee.id
-          )
-          .eq(
-            "roster_date",
-            yesterday
-          )
+      let previousShift: Shift | null = null;
+      if (previousRoster?.shift_id) {
+        const { data: previousShiftData } = await supabase
+          .from("shifts")
+          .select("id, name, start_time, end_time, grace_minutes")
+          .eq("id", previousRoster.shift_id)
           .maybeSingle();
+        previousShift = previousShiftData as Shift | null;
+      }
 
-        if (
-          rosterYesterdayError
-        ) {
-          console.warn(
-            "Yesterday roster error:",
-            rosterYesterdayError
-          );
-        }
-
-        if (rosterYesterday) {
-          roster =
-            rosterYesterday as RosterRow;
-        }
+      if (
+        isEarlyMorning &&
+        previousRoster &&
+        previousShift &&
+        isOvernightShift(previousShift.start_time, previousShift.end_time)
+      ) {
+        roster = previousRoster;
+        shift = previousShift;
+      } else {
+        roster = todayRoster;
       }
 
       /* -------------------------------------------------------------------- */
       /* SHIFT                                                                  */
       /* -------------------------------------------------------------------- */
 
-      if (roster?.shift_id) {
+      if (roster?.shift_id && !shift) {
         const {
           data: shiftData,
           error: shiftError,
