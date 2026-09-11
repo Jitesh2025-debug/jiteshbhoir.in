@@ -6,6 +6,7 @@ export type Permission =
   | "can_employees"
   | "can_roster"
   | "can_reports"
+  | "can_warnings"
   | "can_settings"
   | "can_staff";
 
@@ -19,6 +20,7 @@ type StaffProfile = {
   can_employees: boolean;
   can_roster: boolean;
   can_reports: boolean;
+  can_warnings: boolean;
   can_settings: boolean;
   can_staff: boolean;
 };
@@ -47,6 +49,7 @@ export async function getStaffProfile(): Promise<StaffProfile | null> {
       can_employees,
       can_roster,
       can_reports,
+      can_warnings,
       can_settings,
       can_staff
     `)
@@ -86,6 +89,7 @@ export async function getUserPermissions(): Promise<Permission[]> {
     "can_employees",
     "can_roster",
     "can_reports",
+    "can_warnings",
     "can_settings",
     "can_staff",
   ];

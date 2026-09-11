@@ -9,6 +9,7 @@ type PermissionKey =
   | "can_employees"
   | "can_roster"
   | "can_reports"
+  | "can_warnings"
   | "can_settings"
   | "can_staff";
 
@@ -25,6 +26,7 @@ type Staff = {
   can_employees: boolean;
   can_roster: boolean;
   can_reports: boolean;
+  can_warnings: boolean;
   can_settings: boolean;
   can_staff: boolean;
 };
@@ -39,6 +41,7 @@ type UserForm = {
   can_employees: boolean;
   can_roster: boolean;
   can_reports: boolean;
+  can_warnings: boolean;
   can_settings: boolean;
   can_staff: boolean;
 };
@@ -68,6 +71,10 @@ const permissionLabels: {
     label: "Reports",
   },
   {
+    key: "can_warnings",
+    label: "Warnings",
+  },
+  {
     key: "can_settings",
     label: "Settings",
   },
@@ -86,6 +93,7 @@ function getRolePermissions(role: string): Partial<UserForm> {
         can_employees: true,
         can_roster: true,
         can_reports: true,
+        can_warnings: true,
         can_settings: true,
         can_staff: true,
       };
@@ -97,6 +105,7 @@ function getRolePermissions(role: string): Partial<UserForm> {
         can_employees: true,
         can_roster: true,
         can_reports: true,
+        can_warnings: true,
         can_settings: false,
         can_staff: false,
       };
@@ -108,6 +117,7 @@ function getRolePermissions(role: string): Partial<UserForm> {
         can_employees: true,
         can_roster: false,
         can_reports: false,
+        can_warnings: false,
         can_settings: true,
         can_staff: false,
       };
@@ -119,6 +129,7 @@ function getRolePermissions(role: string): Partial<UserForm> {
         can_employees: false,
         can_roster: false,
         can_reports: false,
+        can_warnings: false,
         can_settings: false,
         can_staff: false,
       };
@@ -130,6 +141,7 @@ function getRolePermissions(role: string): Partial<UserForm> {
         can_employees: false,
         can_roster: false,
         can_reports: false,
+        can_warnings: false,
         can_settings: false,
         can_staff: false,
       };
@@ -147,6 +159,7 @@ function getDefaultUserForm(): UserForm {
     can_employees: true,
     can_roster: false,
     can_reports: false,
+    can_warnings: false,
     can_settings: true,
     can_staff: false,
   };
@@ -263,6 +276,8 @@ export default function StaffPage() {
                 newUser.can_roster,
               can_reports:
                 newUser.can_reports,
+              can_warnings:
+                newUser.can_warnings,
               can_settings:
                 newUser.can_settings,
               can_staff:
@@ -311,6 +326,7 @@ export default function StaffPage() {
       can_employees: person.can_employees,
       can_roster: person.can_roster,
       can_reports: person.can_reports,
+      can_warnings: person.can_warnings,
       can_settings: person.can_settings,
       can_staff: person.can_staff,
     });
@@ -353,6 +369,9 @@ export default function StaffPage() {
 
           can_reports:
             editUser.can_reports,
+
+          can_warnings:
+            editUser.can_warnings,
 
           can_settings:
             editUser.can_settings,

@@ -89,6 +89,7 @@ const email =
           permissions.can_employees || false,
         can_roster: permissions.can_roster || false,
         can_reports: permissions.can_reports || false,
+        can_warnings: permissions.can_warnings || false,
         can_settings:
           permissions.can_settings || false,
         can_staff: permissions.can_staff || false,
